@@ -90,6 +90,107 @@ const PAGE_INDICATOR_WIDTH: number = 64;
 const TOP_BAR_HEIGHT: number = 56;
 
 /**
+ * Height of the floating **capsule** inside the top bar, in vp.
+ *
+ * The bar stays `TOP_BAR_HEIGHT` tall — it is a `Navigation`, and that is the title bar's own
+ * height — but the bar no longer *is* the surface. The capsule is the surface, and it is
+ * deliberately shorter than the bar so the bar keeps a visible edge above and below it: the
+ * capsule is centred, so the gap at each end is `(TOP_BAR_HEIGHT - TOP_BAR_CAPSULE_HEIGHT) / 2`,
+ * which is `SPACE_XS` (4 vp) at the height below.
+ *
+ * `MIN_TAP_TARGET` rather than a smaller number, and that is a constraint rather than a
+ * preference: `topBarRow` draws a 返回 whose `constraintSize({ minHeight: MIN_TAP_TARGET })` is
+ * 48 vp, and a capsule shorter than its own control would either clip it or force it to shrink
+ * below the tap-target guidance this project asserts. So the capsule is exactly one tap target
+ * tall and the bar is what is left over.
+ */
+const TOP_BAR_CAPSULE_HEIGHT: number = MIN_TAP_TARGET;
+
+/**
+ * Corner radius of that capsule, in vp. **Derived from the height, never written down.**
+ *
+ * 完全圆头 — a fully rounded head — is radius = height / 2, and deriving it is the only way the
+ * two cannot drift. A hard-coded 28 (half of the *bar*'s 56) would be the bar's radius: the
+ * moment the capsule's height moved, 28 would draw a rounded rectangle instead of a capsule.
+ *
+ * **It is load-bearing beyond the shape.** 「材质渲染区域与组件可视区域不一致」 is a documented
+ * defect of `systemMaterial` — the material paints its surface over the component's *layout*
+ * box, not its visible box — and the documented remedy is exactly `borderRadius`
+ * (沉浸光感常见问题 · 材质渲染区域与组件可视区域不一致: 「通过 width、height、borderRadius 接口
+ * 控制组件可视区域与材质渲染区域一致」, whose own example is a 100x40 Capsule `Progress` given a
+ * radius of half its height). Without this line the capsule's material would be a 359 x 48
+ * rectangle with a rounded component drawn on top of it.
+ */
+const TOP_BAR_CAPSULE_RADIUS: number = TOP_BAR_CAPSULE_HEIGHT / 2;
+
+/**
+ * How far the persistent chapter name sits below the page box's top edge, in vp.
+ *
+ * **A single tunable constant, and the one number on this screen a device measurement would
+ * settle.** Reader Kit reserves its own 页眉 band — 68 vp at the top of the measured page box —
+ * and draws no text in it: the kit's `pageHeaderContent` is only *read* by this app (as the
+ * first source of the chapter title) and never printed. So the title goes in that band, above
+ * the first line of live text. At `SPACE_M` a `TYPE_CAPTION` line occupies roughly 16–33 vp and
+ * the kit's text starts at 68 vp, leaving ~35 vp of clearance — no collision is possible at any
+ * font size the settings allow.
+ *
+ * With full screen (see `applySystemAppearance` in `Index.ets`) the page box's top edge is the
+ * **screen's** top edge, so this is also a distance from the top of the screen.
+ *
+ * Nothing else in the overlay is expressed in absolute vp, so if the device disagrees with the
+ * reading above this is the one number to change.
+ */
+const PERSISTENT_TITLE_TOP: number = SPACE_M;
+
+/**
+ * Room left inside the bottom bar's box for the bar's own shadow, in vp.
+ *
+ * **The shadow is real; its reach is unmeasured.** The material paints a shadow of its own
+ * (`applyShadow` defaults to true — 沉浸光感常见问题 · 同时设置shadow属性和沉浸式系统材质后
+ * 阴影效果不符合预期), and no document publishes how far it reaches. So this is a *clearance*,
+ * not a measurement: a generous multiple of the one scale the platform's floating surfaces do
+ * publish, i.e. a floor rather than an answer. Any value at or above the real reach removes the
+ * cut; no value here is derived from a number anyone measured.
+ *
+ * **It does cost something, and this is the only place that cost is visible.** The box's height
+ * is also the band that belongs to the bar while the bars are shown (`bottomBar` states the
+ * consequence), so every vp added here is a vp of the page the bar takes while it is up. Hidden,
+ * the bar is `Visibility.None` and the band costs nothing. This constant is therefore the one
+ * knob that trades "more room for the shadow" directly against "more page the bar eats", and it
+ * is the number to lower first if the band reads badly on a device.
+ */
+const BOTTOM_BAR_SHADOW_ROOM: number = SPACE_L;
+
+/**
+ * Height of the box the floating bottom bar is drawn in, in vp.
+ *
+ * **Not `FLOATING_BAR_CLEARANCE` on its own, and that is the whole of the change made for the
+ * clipped shadow.** 96 is a *content* clearance — the shell's own "how much room does a scrolling list
+ * need so the floating capsule does not cover its last row" — and it happens to be exactly the
+ * content the bar paints: the 56 vp capsule, its 8 vp bottom margin and the 32 vp gradient mask
+ * above it (56 + 8 + 32 = 96). So as a *container* height it had zero slack, and everything the
+ * bar paints outside that content — the material's own shadow (`applyShadow` is on by default,
+ * per the SDK's `ImmersiveOptions`) — was cut off at the box edge. Adding the shadow's own room
+ * is what stops the cut.
+ *
+ * **That mechanism is the leading reading, not a measurement, and the clipper is not in this
+ * file.** Nothing here sets `clip`, and ArkUI does not cut an overflowing child at its parent's
+ * bounds by default — so *if* the box's edge is where the shadow stopped, the edge doing the
+ * cutting lives inside `HdsTabs`, whose floating-bar implementation owns the material
+ * (`FloatingTabBarStyle`, `tabs.d.ts:824`; its `systemMaterial` is `@since 26.0.0`,
+ * `tabs.d.ts:895`). The arithmetic above is consistent with that reading and the change is safe
+ * either way, because it cannot move the capsule — but only a device measurement settles it. One
+ * alternative the same screenshot cannot exclude is that the hard edge the user saw was the
+ * gradient mask's own boundary rather than a shadow at all.
+ *
+ * Growing the box **upward** is deliberate and it is why the capsule cannot move: the box is
+ * bottom-anchored (`.position({ left: 0, bottom: 0 })`) and the capsule is placed
+ * `FLOATING_BAR_BOTTOM_MARGIN` from the *bottom* of the box, so the extra height is all added
+ * above the capsule and the capsule's distance from the screen's bottom edge is untouched.
+ */
+const BOTTOM_BAR_BOX_HEIGHT: number = FLOATING_BAR_CLEARANCE + BOTTOM_BAR_SHADOW_ROOM;
+
+/**
  * The reader sheets' **shared minimum height**, as a percentage of the sheet's own maximum.
  *
  * Every one of the four modes opens at this height and cannot be dragged below it, so the
@@ -100,9 +201,14 @@ const TOP_BAR_HEIGHT: number = 56;
  * `detents: [BIND_SHEET_CONTAINER_HEIGHT, SheetSize.LARGE]` with a single shared constant
  * (`entry/src/main/ets/pages/MorePage.ets:154-155`, `common/entity/Constants.ets:19`).
  *
- * The value is unchanged from the fixed height it replaces, and so is its base: the sheet's
- * maximum height, which is the window less the sheet's top safe-area inset. So the sheets
- * open exactly where they opened, and only their reach is new.
+ * The value is unchanged from the fixed height it replaces, but **its base is not, since r101**:
+ * the sheet's maximum height is the window less the sheet's top safe-area inset, and full screen
+ * (see `applySystemAppearance` in `Index.ets`) removes that inset. A percentage rather than a vp
+ * literal is the deliberate part of the answer: "half of the height the sheet actually has" is a
+ * relationship, so the four sheets stay one system at rest at whatever the box is, and they
+ * re-open at half of it after a rotation or on another device. The consequence, stated rather
+ * than discovered: with the status bar hidden the sheets open at 50 % of the full window, which
+ * is about 29 vp taller than they opened before — the status bar's own half.
  */
 const SHEET_MIN_HEIGHT: string = '50%';
 
@@ -2091,6 +2197,90 @@ export struct ReaderView {
   }
 
   /**
+   * The persistent chapter name (常驻章节名) — a third floating overlay of the page.
+   *
+   * ## Why it is not in the top bar
+   *
+   * Because the top bar is `Visibility.None` while the bars are down, and the title has to be
+   * visible then: that is what 常驻 means. So it is its own overlay, a sibling of the page layer
+   * inside the page `Stack`, declared **before** `topBar()` and `bottomBar()` so a revealed bar
+   * draws over it rather than the reverse — the same ordering rule the bars and the zones already
+   * obey.
+   *
+   * ## Exactly one chapter name is on screen at any moment
+   *
+   * The user's rule: **when the bars are shown the persistent title hides**, because the top bar
+   * carries a richer version of the same string (the chapter name plus the page within the
+   * chapter). `chapterOverlayVisible` states that as `!topBarVisible()`, so the two are
+   * complementary *by construction* rather than by two conditions that have to agree, and the
+   * invariant holds on all three of the top bar's states:
+   *
+   *  - bars down (the default) → `topBarVisible()` is false → the persistent title is up;
+   *  - bars up → `topBarVisible()` is true → the persistent title is `Visibility.None`;
+   *  - the failure screen, where `errorText` forces the top bar up for its 返回 → the persistent
+   *    title is down. `chapterTitle` is empty there in any case, so the two statements do not
+   *    even have a string to disagree about.
+   *
+   * Both hidden states are `Visibility.None`, which is **not hit-testable**, and the visible state
+   * is wrapped in `HitTestMode.Transparent` besides — so this overlay can never take a tap from
+   * the three zones underneath it, whichever way the invariant is pointing.
+   *
+   * ## Tone, and why it is not a chip
+   *
+   * `chromeMuted()` — the page's own secondary tone, the one the page indicator in the top bar
+   * already wears (7.29 / 8.74 / 4.67:1 in light / dark / sepia, all above this project's 4.5:1
+   * floor; sepia's 4.67 is the tightest and is not new here). It is the right role because the
+   * title sits **inside Reader Kit's reserved 页眉 band**, which the kit leaves empty, so it
+   * cannot land on live text and needs no opaque backing. `chromeSurface()` + `chromeText()` —
+   * the toast chip's pattern — is what a title that *could* overlap the text would need, and it
+   * is deliberately not spent here. `sheetRowMuted()`/`mutedForeground()` are out of the
+   * question: both are derived for a sheet's `card` row, not for the page.
+   *
+   * ## Placement
+   *
+   * `PERSISTENT_TITLE_TOP`, one constant, and the reasoning for its value lives with it. It is
+   * the only absolute vp in this overlay, so it is the only knob a device measurement would
+   * move. With full screen the page box's top edge is the screen's top edge, so the band is
+   * also measured from the top of the screen.
+   */
+  @Builder
+  private chapterOverlay() {
+    Column() {
+      Text(this.chapterTitle)
+        .fontSize(TYPE_CAPTION)
+        .fontColor(this.chromeMuted())
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+        .textAlign(TextAlign.Center)
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Start)
+    // The inset is `SPACE_L` horizontally so a long chapter name ellipsises inside the page
+    // rather than running to the screen's edges.
+    .padding({ top: PERSISTENT_TITLE_TOP, left: SPACE_L, right: SPACE_L })
+    // Pinned like the two bars: an overlay of the page, never a band of it.
+    .position({ left: 0, top: 0 })
+    // Belt and braces with the sibling order — `Transparent` means this overlay cannot consume a
+    // tap that the zones below it would otherwise get. `Text` itself carries no handler.
+    .hitTestBehavior(HitTestMode.Transparent)
+    .visibility(this.chapterOverlayVisible() ? Visibility.Visible : Visibility.None)
+  }
+
+  /**
+   * Whether the persistent chapter name is on screen: **exactly when no top bar is.**
+   *
+   * The `!` is the whole mutual-exclusion rule — see `chapterOverlay`. It reads `topBarVisible()`
+   * rather than `barsVisible` on purpose: the failure screen is a state where the top bar is up
+   * without `barsVisible` being true, and a title left up there would be a second chapter-name
+   * surface, which is the one thing this rule forbids. `barsVisible` still has exactly **one**
+   * writer (`toggleBars`); this is a reader of a reader.
+   */
+  private chapterOverlayVisible(): boolean {
+    return !this.topBarVisible();
+  }
+
+  /**
    * The reader's top bar — **floating**, hidden until the middle tap zone reveals it.
    *
    * ## Why it is a `Navigation` title bar and nothing else
@@ -2107,8 +2297,9 @@ export struct ReaderView {
    *
    * The container inside `topBarTitle` is what carries the material, which is the shape the
    * official 正例 uses — 「在Navigation标题栏中为局部容器设置沉浸式系统材质，材质生效且面积可控」
-   * (沉浸光感功耗优化) — and it keeps the material's area to one 56 vp bar rather than a page,
-   * which is the same guide's first rule (「控制材质使用面积」).
+   * (沉浸光感功耗优化) — and since r101 that container is a **capsule**, so the material's area is
+   * one 359 x 48 surface rather than a full-width 391 x 56 bar and certainly not a page, which is
+   * the same guide's first rule (「控制材质使用面积」).
    *
    * ## Why it is an overlay rather than a band
    *
@@ -2129,11 +2320,13 @@ export struct ReaderView {
    * this `Navigation` has no content area to extend into: what keeps the bar off the layout is
    * the `position` above.
    *
-   * ## The three attributes that are not cosmetic
+   * ## The four attributes that are not cosmetic
    *
    *  - **`hideBackButton(true)`** — the bar's own 返回 is drawn by `topBarRow`, and the
    *    framework's built-in back control would be a second one. Setting `title` is also what
    *    keeps the title bar itself displayed in spite of it (`navigation.d.ts:1396`).
+   *  - **`title`'s `backgroundColor: Color.Transparent`** — the bar stops painting a band, so
+   *    the capsule inside it is the only surface. See the call for the layering citation.
    *  - **`expandSafeArea([], [])`** — `Navigation` expands into the safe area by default
    *    (`navigation.d.ts:1385`), and with `position` set the SDK applies `position` first and
    *    the expansion second (`common.d.ts:17239`), which would let this 56 vp overlay draw
@@ -2153,7 +2346,23 @@ export struct ReaderView {
     // `barStyle` is a field of `NavigationTitleOptions`, not a `Navigation` attribute
     // (`navigation.d.ts:2324` is the only `title` overload and it takes the options object), so
     // it travels with the title rather than beside it.
-    .title({ builder: this.topBarTitle, height: TOP_BAR_HEIGHT }, { barStyle: BarStyle.STACK })
+    //
+    // **`backgroundColor: Color.Transparent` is what makes the bar stop being a band.** A system
+    // material's visual layer sits *under* `backgroundColor` and `backgroundBlurStyle`
+    // (沉浸光感常见问题 · 背景色或背景模糊遮挡材质效果: 「沉浸光感的视觉层级位于组件的
+    // backgroundColor、backgroundBlurStyle 等属性之下。如果同时设置了不透明的背景色或背景模糊
+    // 样式，这些属性会覆盖在材质层之上，导致材质效果被遮挡不可见」), so a title bar still carrying
+    // its own full-width background would paint that slab *over* the capsule's material — which is
+    // exactly the full-width bar the user reported. `NavigationTitleOptions.backgroundColor` is
+    // `navigation.d.ts:1718`, and the field is on the **options object**, not a `Navigation`
+    // attribute.
+    //
+    // The scope provider stays the full-width `Navigation`: making the bar transparent changes
+    // what it *paints*, not what it *serves*. `systemMaterial` is still honoured only inside a
+    // `Navigation`/`NavDestination` title bar, so the material's home does not move when the
+    // surface does — the capsule is a child **inside** this title builder.
+    .title({ builder: this.topBarTitle, height: TOP_BAR_HEIGHT },
+      { barStyle: BarStyle.STACK, backgroundColor: Color.Transparent })
     .expandSafeArea([], [])
     // Pinned, so the bar is an overlay of the page and never a band of it. See this builder's
     // note: this is the whole of why the measured page box cannot move.
@@ -2178,7 +2387,24 @@ export struct ReaderView {
   }
 
   /**
-   * The title bar's content: the bar itself, and the one place the reader's material lives.
+   * The title bar's content: the **capsule**, and the one place the reader's material lives.
+   *
+   * ## The capsule, and why the bar around it is invisible
+   *
+   * Since r101 the bar is a full-width `Navigation` title bar that **paints nothing**
+   * (`NavigationTitleOptions.backgroundColor(Color.Transparent)`; see `topBar`) with a 359 vp
+   * capsule floating inside it. The user asked for 完全圆头 — a fully rounded head — and the
+   * radius is derived from the capsule's own height, never written down: see
+   * `TOP_BAR_CAPSULE_HEIGHT` (one tap target, because the 返回 inside it is) and
+   * `TOP_BAR_CAPSULE_RADIUS` (= height / 2, and load-bearing for the material's paint area).
+   *
+   * **No nested material, and no stacked blur.** The power guide forbids both explicitly
+   * (「避免材质嵌套」: 「同一子树中只需在最外层设置一次沉浸式系统材质，内层节点不应再设置」;
+   * 「避免与模糊效果叠加」: 「沉浸式系统材质自带的材质滤镜（materialFilter）已包含背景模糊效果，
+   * 再叠加 backgroundBlurStyle、backgroundEffect 等模糊属性属于重复处理」). So there is exactly
+   * one `systemMaterial` in this file, it is on this capsule, `NavigationTitleOptions` carries
+   * **no** `systemMaterial` for this bar, and the capsule carries no `backgroundBlurStyle`,
+   * `backgroundEffect` or `backgroundBlurStyle`-family attribute.
    *
    * **Two branches, because an attribute cannot be applied conditionally in one component
    * call** — the same shape `ShelfPage.menuOptions` uses for its menu. The difference between
@@ -2195,10 +2421,10 @@ export struct ReaderView {
    *    `topBarMaterialOption()`'s to answer, and all three are why this branch has to exist: the
    *    fallback is a correct opaque bar, not a missing one.
    *
-   * **An API-24 device therefore shows an opaque top bar**: the same three elements, painted
+   * **An API-24 device therefore shows an opaque capsule**: the same three elements, painted
    * `pageBackground()` — the page's own colour — with no material, no translucency and no
-   * system tint. That is the identical flat tone the two bars were before this round, and it is
-   * a deliberate degradation rather than a gap.
+   * system tint, **in the requested capsule shape at the requested radius**. The material is
+   * what degrades, not the design; the branch is why that sentence is true.
    *
    * The spec's companion for `ULTRA_THIN` is 渐变模糊, and it is **not** implemented. The reason
    * is the same document set: a material's `materialFilter` already contains the background
@@ -2209,23 +2435,45 @@ export struct ReaderView {
    */
   @Builder
   private topBarTitle() {
-    if (this.topBarMaterialObject !== undefined) {
-      Column() {
-        this.topBarRow()
+    // Two levels, and the split is the change: the outer column is the **bar's** content and is
+    // one bar tall, the inner column is the **capsule** and is shorter than the bar. A single
+    // level could not express "the capsule is not the bar" — it would make `TOP_BAR_HEIGHT` a
+    // property of what is drawn inside the bar rather than of the bar.
+    Column() {
+      if (this.topBarMaterialObject !== undefined) {
+        Column() {
+          this.topBarRow()
+        }
+        .width('100%')
+        .height(TOP_BAR_CAPSULE_HEIGHT)
+        .justifyContent(FlexAlign.Center)
+        // The horizontal inset is the capsule's own `margin` and nothing else.
+        // `NavigationTitleOptions.paddingStart`/`paddingEnd` (`navigation.d.ts:1791`, `:1814`)
+        // are inert for this bar: they act on the framework's title row, and a custom `builder`
+        // with `hideBackButton(true)` has no such row. `FLOATING_BAR_SIDE_MARGIN` is the shell's
+        // own floating-bar side margin, so the two bars line up on the same pair of edges.
+        .margin({ left: FLOATING_BAR_SIDE_MARGIN, right: FLOATING_BAR_SIDE_MARGIN })
+        // Load-bearing, not cosmetic — see `TOP_BAR_CAPSULE_RADIUS`.
+        .borderRadius(TOP_BAR_CAPSULE_RADIUS)
+        .systemMaterial(this.topBarMaterialObject)
+      } else {
+        Column() {
+          this.topBarRow()
+        }
+        .width('100%')
+        .height(TOP_BAR_CAPSULE_HEIGHT)
+        .justifyContent(FlexAlign.Center)
+        .margin({ left: FLOATING_BAR_SIDE_MARGIN, right: FLOATING_BAR_SIDE_MARGIN })
+        .borderRadius(TOP_BAR_CAPSULE_RADIUS)
+        // No `Color.Transparent` on this branch, and that is the whole difference between the
+        // two: this one **is** the surface. An API-24 device gets the requested capsule with an
+        // opaque fill in the page's own colour.
+        .backgroundColor(this.pageBackground())
       }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .systemMaterial(this.topBarMaterialObject)
-    } else {
-      Column() {
-        this.topBarRow()
-      }
-      .width('100%')
-      .height('100%')
-      .justifyContent(FlexAlign.Center)
-      .backgroundColor(this.pageBackground())
     }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
   }
 
   /**
@@ -2444,16 +2692,29 @@ export struct ReaderView {
    * colour field, so the four labels wear the platform's own tab-label tone. That is exactly what
    * the shell's working bar does.
    *
-   * ## Why the box is `FLOATING_BAR_CLEARANCE` tall, and what that costs
+   * ## Why the box is `BOTTOM_BAR_BOX_HEIGHT` tall, and what that costs
    *
-   * The `HdsTabs` is a bottom-anchored overlay of the page `Stack`, `FLOATING_BAR_CLEARANCE`
-   * (96 vp) tall — the number the shell already reserves under its own floating bar for this very
-   * component, so the reader and the shell agree on how much room the bar needs. It is **not**
-   * the whole page, because `Tabs` is a swipeable container: at full height its content region
-   * would take the reader's page-turn swipes away from the kit. The cost is stated rather than
-   * hidden: **while the bars are shown**, a tap inside that 96 vp band belongs to the bar and
+   * The `HdsTabs` is a bottom-anchored overlay of the page `Stack`, **120 vp** tall:
+   * `FLOATING_BAR_CLEARANCE` (96) plus `BOTTOM_BAR_SHADOW_ROOM` (24). Both halves have a job.
+   *
+   *  - **96 is the shell's own number** — the room the shell reserves under its floating bar for
+   *    this very component — so the reader and the shell still agree on how much the bar needs.
+   *    It is also, exactly, what the bar paints: the 56 vp capsule, `FLOATING_BAR_BOTTOM_MARGIN`
+   *    (8) and `FLOATING_BAR_MASK_HEIGHT` (32) above it. That sum is the whole reason 96 is the
+   *    wrong *container* height: the box had zero slack, and the material's own shadow
+   *    (`applyShadow` defaults to true) was cut off at the box's edge — the user's
+   *    「好像有阴影被什么东西截断了」.
+   *  - **24 is that slack**, and it is all added **above** the capsule: the box grows upward
+   *    from a bottom anchor, and the capsule is placed `FLOATING_BAR_BOTTOM_MARGIN` from the
+   *    box's **bottom**, so the capsule does not move by one pixel when this number changes.
+   *    Nothing else in the box is painted, so the extra height is invisible.
+   *
+   * It is **not** the whole page, because `Tabs` is a swipeable container: at full height its
+   * content region would take the reader's page-turn swipes away from the kit. The cost is stated
+   * rather than hidden: **while the bars are shown**, a tap inside the box belongs to the bar and
    * does not turn a page. While they are hidden the bar is `Visibility.None`, which is not
    * hit-testable, so the band behaves as if the bar were not there — and hidden is the default.
+   * Growing the box from 96 to 120 vp widens that band by 24 vp, and only while the bars are up.
    */
   @Builder
   private bottomBar() {
@@ -2461,7 +2722,7 @@ export struct ReaderView {
       this.bottomBarEntries()
     }
     .width('100%')
-    .height(FLOATING_BAR_CLEARANCE)
+    .height(BOTTOM_BAR_BOX_HEIGHT)
     .barMode(BarMode.Fixed)
     .barOverlap(true)
     .vertical(false)
@@ -3196,8 +3457,13 @@ export struct ReaderView {
    *   2. the transient chip, an overlay since this round so a message can no longer resize the
    *      page. (It is unreachable today — `flash()` has no caller — and this keeps it harmless
    *      if it ever gets one.);
-   *   3. the three tap zones, `HitTestMode.Transparent`, so the kit keeps its drags;
-   *   4. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
+   *   3. the **persistent chapter name** (`chapterOverlay`), an always-on overlay of its own so
+   *      the chapter is still named while the bars are down. It is here, before the zones, and
+   *      `HitTestMode.Transparent`, so a tap on it is a tap on the zone underneath; and before
+   *      both bars, so a revealed bar draws over it. The rule that exactly one chapter name is
+   *      on screen at any moment lives in `chapterOverlayVisible`, not in this order;
+   *   4. the three tap zones, `HitTestMode.Transparent`, so the kit keeps its drags;
+   *   5. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
    *      and is not also a page turn. Material does not affect hit testing — it paints
    *      background, border, blur and shadow and nothing else — so this ordering is the entire
    *      mechanism that gives a bar its own taps. A hidden bar is `Visibility.None`, which is
@@ -3319,7 +3585,14 @@ export struct ReaderView {
           .hitTestBehavior(HitTestMode.Transparent)
         }
 
-        // --- the three tap zones, then the two bars over them ---------------------
+        // --- the persistent chapter name, the three zones, then the bars over them --
+        //
+        // The order is the mechanism twice over: the persistent title is **before** `tapZones()`
+        // so a tap on it belongs to the zone underneath, and before both bars so a revealed bar
+        // draws over it. `chapterOverlayVisible()` already makes the title and the top bar
+        // mutually exclusive, so the second of those is never *seen* as a conflict — but the
+        // order is still the thing that makes it impossible for a bar to be drawn under it.
+        this.chapterOverlay()
         if (this.errorText.length === 0) {
           this.tapZones()
           this.bottomBar()

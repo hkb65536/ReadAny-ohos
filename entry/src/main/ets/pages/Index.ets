@@ -249,7 +249,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * the frost off one that is. `onDisappear`'s clear stays unconditional, so the gate can still
  * never outlive the sheet. `sheetOpen = false` is still written exactly once.
  */
-export const BUILD_STAMP: string = 'build 2026-10-13 r100 (floating-reader-bars)';
+export const BUILD_STAMP: string = 'build 2026-10-13 r101 (capsule-and-fullscreen)';
 
 /**
  * A byte count as something a person can read.
@@ -814,6 +814,33 @@ struct Index {
    * Setting the colour mode from the theme fixes both at once. Sepia maps to light,
    * because it is a light theme with a warm cast — telling the system "dark" for it
    * would make every system surface fight the page.
+   *
+   * ## It is also the app's window-geometry call since r101
+   *
+   * Full screen and the hidden status bar are issued from the same `.then` as the window colour,
+   * for the reasons written at the call site. What that changes, and what it deliberately does
+   * not:
+   *
+   *  - **The reader's two bars do not move.** They are `position`-anchored to the reader's page
+   *    `Stack` (top edge / bottom edge), and the `Stack` is what grows, so top-anchored still
+   *    means the top of the page and bottom-anchored still means the bottom of it. The top bar is
+   *    inside a `Navigation` that opts out of safe-area expansion (`expandSafeArea([], [])`), so
+   *    it cannot be pushed around by the inset change either.
+   *  - **`SHEET_MIN_HEIGHT` keeps its value and changes its base.** `'50%'` is half the sheet's
+   *    own maximum, which is the window less the sheet's top safe-area inset, and full screen
+   *    removes that inset — so the four reader sheets open about 29 vp higher (half of 57.8).
+   *    Deliberate: a percentage keeps "half of what the sheet has" true on rotation and on other
+   *    devices, where a vp literal would not. `SHEET_MIN_HEIGHT`'s own note records it.
+   *  - **The three tap zones need no change, and that is checked rather than assumed.** They are
+   *    three `layoutWeight(1)` columns of a full-width, full-height row (`height('100%')`), so
+   *    their boundaries are the thirds of whatever box the page area has: the x-boundaries are
+   *    unchanged (the page was already full width) and the y-extent simply grows with the box.
+   *    "Middle" is still the middle, on both axes.
+   *  - **`resolveViewPort()` is untouched and still cannot return 0.** The taller box arrives
+   *    through the existing `onAreaChange` on the page layer as a larger `viewHeight`, and
+   *    `resolveViewPort` multiplies *whatever it measured* by the display density. Nothing in it
+   *    clamps, special-cases or assumes a height — its only branches are "measured", "window",
+   *    "nominal fallback" — so a taller measurement is simply a taller measurement.
    */
   private applySystemAppearance(): void {
     const context: common.UIAbilityContext | undefined = this.context();
@@ -833,6 +860,61 @@ struct Index {
     window.getLastWindow(context)
       .then((win: window.Window): void => {
         win.setWindowBackgroundColor(colour);
+        // --- full screen, and the status bar hidden with it (r101) -----------------
+        //
+        // **Why here.** This is the one place the app already holds the main window
+        // (`window.getLastWindow`), so it costs no second lookup, and a window-level setting
+        // re-asserted from `applySystemAppearance` is re-asserted on every theme change for free.
+        //
+        // **Why full screen at all.** Reader Kit insets the reading area itself — its own
+        // 68 / 48 / 27 / 27 vp 页眉页脚 reserve, which is documented as reserved and is **not**
+        // configurable (`ReaderSetting` has thirteen fields and no padding/inset/margin/safeArea;
+        // `setPageConfig` takes font metrics plus `viewPortWidth`/`viewPortHeight` and nothing
+        // else). So the only lever that can actually move the text is the window's own layout
+        // area: `setWindowLayoutFullScreen(true)` is documented as "the layout does not avoid the
+        // status bar … and components may overlap with them" (`@ohos.window.d.ts:4528`), which
+        // hands the page the status bar's 57.8 vp at the top and the gesture bar's 27.9 vp at the
+        // bottom (both measured on this device).
+        //
+        // **Why app-wide rather than only while reading.** Three reasons, and the second is the
+        // decisive one:
+        //
+        //  1. These are properties of the **window**, not of the reader. A per-reader version
+        //     would toggle the window twice per book and would need the mode kept somewhere — a
+        //     second piece of state that `openReader`/`closeReader` could desync from. App-wide,
+        //     the value is a constant and there is nothing to desync.
+        //  2. A toggle at `openReader` would move the window's layout area **while the reader
+        //     mounts**, so the kit would lay out once at the old geometry and again at the new
+        //     one — a `setPageConfig` re-pagination in front of a reader who has already started
+        //     reading, which is the exact trap `ReaderView`'s two bars are built to avoid. Asserted
+        //     at start-up, the reader's *first* layout is already the final geometry.
+        //  3. `setSpecificSystemBarEnabled('status', false)` is documented to take effect **only**
+        //     in full-screen mode and to "take effect once the main window enters full-screen or
+        //     maximized mode" (`@ohos.window.d.ts:4637`). So the two have the same lifetime by
+        //     construction: any moment full screen is off is a moment the status bar returns. They
+        //     belong on the same lines.
+        //
+        // **The disclosed consequence.** This is a window setting, so the shell gets it too: the
+        // shelf/书签笔记/设置 content areas also begin at the screen's top edge now, and the
+        // shared `pageTitle` therefore sits `SPACE_S` (8 vp) below it instead of 8 vp below the
+        // status bar. Nothing overlaps — the status bar is hidden — but the three section titles
+        // are one status-bar height higher than they were. Left as it is rather than compensated
+        // with a magic top padding: the honest version of that compensation needs a real
+        // measurement (`getWindowAvoidArea`), which is a separate change. If it reads badly on the
+        // device, that is the fix, not a larger constant.
+        //
+        // Log-and-continue on both, matching the window colour's own handling: neither is worth an
+        // error the user has to dismiss, and the app is fully usable at the default geometry.
+        win.setWindowLayoutFullScreen(true).catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'window layout not made full screen: %{public}s', String(err));
+        });
+        // Not conditioned on `themeMode`, unlike the colour beside it: the status bar's
+        // *visibility* is not theme-derived. Also a documented silent no-op in split-screen and
+        // floating-window mode (`@ohos.window.d.ts:4638`), which is why this is a log and not a
+        // retry.
+        win.setSpecificSystemBarEnabled('status', false).catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'status bar not hidden: %{public}s', String(err));
+        });
       })
       .catch((err: Object): void => {
         // Cosmetic only: the app is fully usable with the default window colour, so a
