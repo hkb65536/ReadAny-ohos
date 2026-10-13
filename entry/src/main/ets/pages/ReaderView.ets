@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { display } from '@kit.ArkUI';
+import { display, SymbolGlyphModifier } from '@kit.ArkUI';
 import { bookParser, ReadPageComponent, readerCore } from '@kit.ReaderKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -25,19 +25,23 @@ import {
 } from 'data';
 import type { ReaderSettings, ReadingPosition } from 'data';
 import {
+  FLOATING_BAR_BOTTOM_MARGIN,
+  FLOATING_BAR_CLEARANCE,
+  FLOATING_BAR_MASK_HEIGHT,
+  FLOATING_BAR_SIDE_MARGIN,
   MIN_TAP_TARGET,
   paletteFor,
   RADIUS_CARD,
   RADIUS_CHIP,
   RADIUS_CONTROL,
   RADIUS_IMAGE,
-  RADIUS_LABEL,
   RADIUS_SHEET,
   readerAppearance,
   SPACE_L,
   SPACE_M,
   SPACE_S,
   SPACE_XS,
+  topBarMaterialOption,
   TYPE_BODY,
   TYPE_CAPTION,
   TYPE_SUBTITLE,
@@ -45,76 +49,12 @@ import {
 } from '../theme/Theme';
 import type { ReaderAppearance, ThemeMode } from '../theme/Theme';
 import { MOTION_ON_KEY, Motion } from '../theme/Motion';
-// TEMPORARY DIAGNOSTIC — material-scope probe. Delete with `DIAG_MATERIAL_TABS` (hunk 2).
-// `SymbolGlyphModifier` is not an ArkUI ambient declaration — it is a class in the ArkUI
-// module — so the probe's cells need it imported. It cannot be added to the file's own
-// `@kit.ArkUI` import without modifying a pre-existing line, which would end the
-// byte-identity proof the strip script carries.
-import { SymbolGlyphModifier } from '@kit.ArkUI';
-import { BlurStrategy, hdsMaterial, HdsTabs, HdsTabsController } from '@kit.UIDesignKit';
+// The bottom bar's floating presentation is an HDS feature: it is the control that carries the
+// 沉浸光感 material, the capsule container and the gradient mask. See `bottomBar`.
+import { BlurStrategy, hdsMaterial, HdsTabs } from '@kit.UIDesignKit';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'InkBoatReader';
-
-// ===========================================================================
-// TEMPORARY DIAGNOSTIC — material-scope probe. DELETE THIS WHOLE BLOCK TO REMOVE IT.
-//
-// Rewritten 2026-10-13 for the **second** material question, the first one having been
-// answered by measurement. Both answers are recorded here because the second is only
-// interpretable against the first:
-//
-//   1. **A single `TabContent` with a custom `tabBar` builder is a legal material
-//      surface, and does not host arbitrary content.** No run printed
-//      `Material inactive: out of scope`, so the framework accepted it; but with the
-//      content sized to 48 vp inside a bar measured at 229.3 x 92.4 vp, the four entries
-//      still never appeared. 48 vp fits easily in 92.4 vp, so "clipped by height" is
-//      refuted: the tab bar builder's content was simply never laid out.
-//   2. **Acceptance is not visibility.** On that surface the tint measured `F2EBDB`
-//      against a page of `F2E7D3` — 11/255 lighter, same warmth, no discernible outline
-//      and no discernible translucency. (Those two are hex, and the `#` is left off on
-//      purpose: `verify-themes` requires that no `#RRGGBB` appears anywhere in this file,
-//      and its regex cannot tell a comment from a colour. The requirement is still met —
-//      this is a measurement, not a literal the reader paints with.) "No rejection line" and "a recognisable material
-//      effect" are two different claims and only the first was ever established.
-//
-// So this round changes **only the tab shape**: to the ordinary `Tabs` shape, and to
-// exactly what the shell's bar does — four real `TabContent`s, each carrying a
-// `BottomTabBarStyle`, with `barFloatingStyle` copied field for field from
-// `Index.shellTabs()` (the one place in this app where the material demonstrably renders
-// on this device). `barWidth`, `barHeight`, the gradient mask, the material parameters,
-// `blurStrategy` and every entry semantic are unchanged from the previous round.
-//
-// The four cells are **not tab switches**: they are today's four entry points wearing the
-// HDS bar's own icon + label styling. `onTabBarClick` dispatches to the same four handler
-// methods the real bottom bar calls — each still carrying its own
-// `if (this.loading) return;` guard, untouched — and `onContentWillChange` returns false
-// so the selection cannot move either. All four `TabContent`s call the same builder and
-// paint the same nothing, so even a switch that slipped past the guard could not change
-// what is on screen. `BottomTabBarStyle` carries no `onClick`, which is why the dispatch
-// had to move to the bar's click callback; the handlers themselves are unchanged.
-//
-// One deliberate deviation from "today's four entries": they carry no `.clickEffect(...)`.
-// `verify-motion` counts gated click effects in the reader (expected exactly 5) and press
-// feedback has nothing to do with the question under test, so the probe does not perturb
-// that count. There is no `onClick` to carry one in any case.
-//
-// To remove every trace of the probe:
-//   1. delete the two constants below;
-//   2. delete the two `@kit.*` import lines in the header;
-//   3. delete `diagHdsController`, `diagMaterialPage()`, `diagMaterialEntries()` and
-//      `diagMaterialTabs()` in the struct (the block marked "material-scope probe" above
-//      `build()`);
-//   4. delete the `if (DIAG_MATERIAL_TABS) { this.diagMaterialTabs() }` block inside
-//      the page `Stack` in `build()`.
-// Nothing else in this file, and nothing outside it, is part of the probe: no
-// existing line is modified, only these four hunks are added.
-// ===========================================================================
-
-/** The probe surface. `false` = the reader renders exactly as it did before. */
-const DIAG_MATERIAL_TABS: boolean = true;
-
-/** The gradient mask's height, as the shell's floating bar has it (`Theme.ets`). */
-const DIAG_MATERIAL_MASK_HEIGHT: number = 32;
 
 /** How long a transient confirmation stays on screen. */
 const TOAST_VISIBLE_MS: number = 2200;
@@ -138,11 +78,16 @@ const PAGE_OFFSET_UNKNOWN: number = -1;
  */
 const PAGE_INDICATOR_WIDTH: number = 64;
 
-/** Width reserved for the percentage label at the left of the progress track, in vp. */
-const PERCENT_LABEL_WIDTH: number = 40;
-
-/** Height of the progress track in vp — the same metric as the shell's sync bar. */
-const PROGRESS_TRACK_HEIGHT: number = 6;
+/**
+ * Height of the reader's floating top bar, in vp.
+ *
+ * `Navigation`'s own title-bar height in its default (Mini-equivalent) presentation is 56 vp,
+ * and the bar this replaces measured the same: `MIN_TAP_TARGET` (48) plus `SPACE_XS` above and
+ * below. Nothing is derived from it — the bar is an overlay of the page `Stack` and holds no
+ * content of its own (`topBar`) — so the two facts agreeing is a convenience rather than a
+ * dependency.
+ */
+const TOP_BAR_HEIGHT: number = 56;
 
 /**
  * The reader sheets' **shared minimum height**, as a percentage of the sheet's own maximum.
@@ -411,18 +356,35 @@ export struct ReaderView {
    * prints a number it cannot justify. See the capability note above `pageIndicator`.
    */
   @State private pageOffset: number = PAGE_OFFSET_UNKNOWN;
-  /**
-   * Reading progress for the bottom bar, in whole percent.
-   *
-   * Chapter-granular, because that is the only progress the SDK supports: it is
-   * `progressFor(spineIndex)`, the same fraction that is persisted and synced. It does
-   * **not** move while turning pages inside one chapter, and it assumes every spine item
-   * is about the same length. `progressFor` carries the reasoning.
-   */
-  @State private progressPercent: number = 0;
   @State private errorText: string = '';
   /** True once `init()` resolved; before that the controller refuses other calls. */
   @State private controllerReady: boolean = false;
+
+  /**
+   * Whether the reader's two floating bars are on screen. **Its only writer is the middle tap
+   * zone** (`tapZones` → `toggleBars`).
+   *
+   * The bars are hidden at rest and stay exactly where the reader put them: there is no
+   * auto-hide timer and no tap-outside-to-dismiss, so this boolean is the whole of the bars'
+   * state machine. See `toggleBars` for why it cannot drift from `sheetOpen`, and `build` for
+   * why an appearance or disappearance here is not a layout event for the kit.
+   */
+  @State private barsVisible: boolean = false;
+
+  /**
+   * The top bar's system material, built **once**, or `undefined` for the opaque bar.
+   *
+   * A field rather than a call at the attribute, for two reasons: `topBarTitle` has to
+   * *branch* on whether a material exists (ArkTS cannot apply an attribute conditionally in one
+   * component call), so a call in the branch's condition and another in its argument would
+   * build two different objects per render — and the 沉浸光感 power guidance is explicit that
+   * changing material parameters, or re-creating the material, makes the framework recompute
+   * it (「频繁修改style、materialColor等材质参数…都会触发材质效果重新计算」,
+   * 沉浸光感功耗优化). `topBarMaterialOption()` is the one gate: it answers `undefined` on a
+   * pre-26 runtime, on a device that reports no immersive support, and on a device whose
+   * material level would paint the surface from the *system's* palette instead of this app's.
+   */
+  private topBarMaterialObject: Object | undefined = topBarMaterialOption();
 
   /**
    * The controller the component hands back.
@@ -1192,7 +1154,11 @@ export struct ReaderView {
     // from `pageOffset` instead, which is a number in the same coordinate system the kit
     // lays pages out in.
     this.pageOffset = info.pageOffset;
-    this.progressPercent = Math.round(this.progressFor(info.resourceIndex) * 100);
+    // The reading-progress percentage is deliberately **not** kept here any more. The bottom bar
+    // lost its progress row this round (it carries the four entries and nothing else), and a
+    // `@State` maintained for a read-out that no longer exists is dead state — the fraction the
+    // app persists and syncs is computed below, from `progressFor`, at the one place it is
+    // actually used. See `progressFor`.
     // Updated before the dedup guard below: the toolbar must always act on the page
     // currently on screen, even when the event itself is a duplicate the progress
     // reporter is right to skip.
@@ -1303,16 +1269,11 @@ export struct ReaderView {
     return `第 ${this.pageOffset + 1} 页`;
   }
 
-  /** The bottom bar's percentage label. Chapter-granular; see `progressPercent`. */
-  private progressPercentLabel(): string {
-    return `${this.progressPercent}%`;
-  }
-
   // -------------------------------------------------------------------------
   // Reader colours
   //
   // **One source: the application theme.** Every colour on this screen — the page, both
-  // bars, the settings panel, the progress track, the chip and all four text tones — is a
+  // floating bars, the four sheets, the chip and every text tone — is a
   // field of `readerAppearance(this.themeMode)`. That function derives background and text
   // from a single `ThemePalette` in one call, so a sepia page with light-mode text cannot
   // be expressed; and this file carries no colour literal of its own, which is what makes
@@ -1352,22 +1313,23 @@ export struct ReaderView {
   }
 
   /**
-   * The opaque chrome surface: the progress track and the transient chip.
+   * The opaque chrome surface: the transient confirmation chip.
    *
    * A step off the page colour, and that is its job — an element painted the page's own tone
-   * reads as nothing. For the track it means the fill has something to advance across.
+   * reads as nothing. It had a second caller until this round: the bottom bar's progress track.
+   * That row is gone (the bar carries the four entries and nothing else), so the chip is the
+   * only fill left, and the accessor stays because the chip still needs it.
    *
    * **The four sheets used to use it too, and no longer do.** They take the palette's
    * `background` for their body since r94 (`sheetCard`), which is the page tone rather than
    * this chrome tone, because `background` is the surface the palette's text roles are measured
    * against: `foreground` on it is the reader's own page pair, and `chromeMuted()` on it is the
    * tone `readerAppearance` derives for the page. A sheet carries a title, a summary line and
-   * two empty states, so it needs the surface those tones were derived for. This accessor keeps
-   * the two elements that are drawn *inside* the page's own bars.
+   * two empty states, so it needs the surface those tones were derived for.
    *
-   * The top and bottom bars deliberately do **not** use it — they are painted
-   * `pageBackground()`, the page's own colour, so the reading surface stays one flat opaque
-   * tone.
+   * The two floating bars deliberately do **not** use it. The top bar is painted by its system
+   * material or, on the paths that have none, `pageBackground()`; the bottom bar is painted by
+   * the HDS floating style, whose gradient mask is the page colour. Neither is this accessor's.
    */
   private chromeSurface(): string {
     return this.pageColors().surface;
@@ -2129,22 +2091,164 @@ export struct ReaderView {
   }
 
   /**
-   * The reader's top bar: back · chapter title (centred) · page within the chapter.
+   * The reader's top bar — **floating**, hidden until the middle tap zone reveals it.
    *
-   * **Exactly three elements.** The book title is deliberately absent: the shell used to
-   * draw its own row above this component with back + book title, and this component then
-   * drew the header string — the book title again — underneath it. That duplication is
-   * what this bar removes; the chapter name is drawn here because it arrives with
-   * `pageShow`, which only this component subscribes to.
+   * ## Why it is a `Navigation` title bar and nothing else
    *
-   * The title is centred within the space the two side elements leave, which is how it can
-   * truncate with an ellipsis instead of running under them. The two sides are close in
-   * width (a two-character 返回 and a fixed-width indicator), so the title sits within a
-   * few vp of the true centre; a `Stack` would centre it exactly and let a long title
-   * collide with both side controls, which is the worse trade.
+   * The bar carries the 沉浸光感 system material — the design spec's own prescription for a
+   * component 悬浮 at the top is `ULTRA_THIN` (「当组件在顶部悬浮时，推荐使用 ULTRA_THIN 枚举参数」,
+   * 沉浸光感 · 场景规范) — and `systemMaterial` is **not a free-standing attribute**. The
+   * framework honours it only on a component inside a `Navigation`/`NavDestination` title bar or
+   * a horizontal `Tabs` bottom `TabBar` with `barPosition: BarPosition.End`, and discards it
+   * everywhere else with `Material inactive: out of scope. Use component in navigation title bar
+   * or Tabbar.` — a line this project has already measured on a `Menu`. So the top bar is drawn
+   * *inside a title bar*, and the `Navigation` around it is a **material host, not a navigation
+   * container**: no content, no `NavPathStack`, no destination.
+   *
+   * The container inside `topBarTitle` is what carries the material, which is the shape the
+   * official 正例 uses — 「在Navigation标题栏中为局部容器设置沉浸式系统材质，材质生效且面积可控」
+   * (沉浸光感功耗优化) — and it keeps the material's area to one 56 vp bar rather than a page,
+   * which is the same guide's first rule (「控制材质使用面积」).
+   *
+   * ## Why it is an overlay rather than a band
+   *
+   * The `Navigation` is `TOP_BAR_HEIGHT` tall, pinned to the top of the page `Stack` by
+   * `position`, and it holds no content. The kit paginates into the page `Stack`'s measured box,
+   * so a bar that occupied layout space would move that box when it appeared — the trap
+   * `bottomBar` used to carry a paragraph about, and the one that re-paginated a page in front
+   * of a reader who had already started reading. A bar that is a **sibling overlay** of the kit
+   * inside that same `Stack` cannot: the `Stack`'s size is `layoutWeight(1)` × `width('100%')`
+   * and does not depend on any child, so the box is identical whether the bar is up, down, or
+   * never shown. `tools/verify-reader-chrome.mjs` asserts that structure rather than trusting
+   * this paragraph.
+   *
+   * `barStyle(BarStyle.STACK)` is the material guide's recommendation for a title bar
+   * (「建议设置沉浸光感时，使用 barStyle 为 STACK 样式，以便 Navigation 内容区延伸至标题栏区域，
+   * 获得沉浸光感的最佳体验」) and `BarStyle.STACK` is documented as "the title bar … is overlaid
+   * on top of the content area" (`navigation.d.ts:1915`). It is belt-and-braces here, because
+   * this `Navigation` has no content area to extend into: what keeps the bar off the layout is
+   * the `position` above.
+   *
+   * ## The three attributes that are not cosmetic
+   *
+   *  - **`hideBackButton(true)`** — the bar's own 返回 is drawn by `topBarRow`, and the
+   *    framework's built-in back control would be a second one. Setting `title` is also what
+   *    keeps the title bar itself displayed in spite of it (`navigation.d.ts:1396`).
+   *  - **`expandSafeArea([], [])`** — `Navigation` expands into the safe area by default
+   *    (`navigation.d.ts:1385`), and with `position` set the SDK applies `position` first and
+   *    the expansion second (`common.d.ts:17239`), which would let this 56 vp overlay draw
+   *    outside the box it was measured into. Empty arrays mean "expand nothing"
+   *    (`common.d.ts:17216`).
+   *  - **`visibility(barsVisible || error)`** — see `topBarVisible`.
    */
   @Builder
   private topBar() {
+    Navigation() {
+      // Deliberately empty. This `Navigation` exists for its title bar, which is the only
+      // surface the framework accepts a system material on.
+    }
+    .width('100%')
+    .height(TOP_BAR_HEIGHT)
+    .hideBackButton(true)
+    // `barStyle` is a field of `NavigationTitleOptions`, not a `Navigation` attribute
+    // (`navigation.d.ts:2324` is the only `title` overload and it takes the options object), so
+    // it travels with the title rather than beside it.
+    .title({ builder: this.topBarTitle, height: TOP_BAR_HEIGHT }, { barStyle: BarStyle.STACK })
+    .expandSafeArea([], [])
+    // Pinned, so the bar is an overlay of the page and never a band of it. See this builder's
+    // note: this is the whole of why the measured page box cannot move.
+    .position({ left: 0, top: 0 })
+    // Hidden by default, and a hidden bar is `Visibility.None`, which is **not hit-testable** —
+    // so "the bars are down" and "the three zones own the whole page" are the same statement.
+    .visibility(this.topBarVisible() ? Visibility.Visible : Visibility.None)
+  }
+
+  /**
+   * Whether the top bar is on screen.
+   *
+   * Two facts, and only one of them is the reader's: the middle tap zone's `barsVisible`, and
+   * "the book failed to open". **The second is not a second writer of the first** — `barsVisible`
+   * still has exactly the one writer `toggleBars` — it is this *render* condition, and it exists
+   * because 返回 is drawn by `topBarRow`: without it, a book that fails to open would be a screen
+   * with no way out except the system back gesture. The failure screen has no tap zones either
+   * (there is no page to turn), so the bar there is not a thing the reader can dismiss.
+   */
+  private topBarVisible(): boolean {
+    return this.barsVisible || this.errorText.length > 0;
+  }
+
+  /**
+   * The title bar's content: the bar itself, and the one place the reader's material lives.
+   *
+   * **Two branches, because an attribute cannot be applied conditionally in one component
+   * call** — the same shape `ShelfPage.menuOptions` uses for its menu. The difference between
+   * them is only who paints the surface:
+   *
+   *  - **the material**, when `topBarMaterialOption()` returned one. A material takes over the
+   *    background, border and shadow, and the SDK advises against setting those beside it, so
+   *    this branch sets no `backgroundColor` at all;
+   *  - **the page colour**, on the three paths that gate refuses: a pre-26 runtime (the whole
+   *    reason this needs a guard — `uiMaterial.ImmersiveMaterial` is `@since 26.0.0`, and on an
+   *    API-24 device the namespace does not exist), a device that reports no immersive-material
+   *    support, and a device whose material level is the low-compute one that paints the surface
+   *    from the *system's* palette instead of this app's. All three are
+   *    `topBarMaterialOption()`'s to answer, and all three are why this branch has to exist: the
+   *    fallback is a correct opaque bar, not a missing one.
+   *
+   * **An API-24 device therefore shows an opaque top bar**: the same three elements, painted
+   * `pageBackground()` — the page's own colour — with no material, no translucency and no
+   * system tint. That is the identical flat tone the two bars were before this round, and it is
+   * a deliberate degradation rather than a gap.
+   *
+   * The spec's companion for `ULTRA_THIN` is 渐变模糊, and it is **not** implemented. The reason
+   * is the same document set: a material's `materialFilter` already contains the background
+   * blur, and stacking a blur on a material is repeated work the power guide forbids
+   * (「沉浸式系统材质自带的材质滤镜（materialFilter）已包含背景模糊效果，再叠加…属于重复处理」,
+   * 沉浸光感功耗优化 · 避免与模糊效果叠加). Recorded as a departure rather than silently skipped;
+   * so is the fact that a `Navigation` title bar offers no gradient-mask parameter to put one in.
+   */
+  @Builder
+  private topBarTitle() {
+    if (this.topBarMaterialObject !== undefined) {
+      Column() {
+        this.topBarRow()
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .systemMaterial(this.topBarMaterialObject)
+    } else {
+      Column() {
+        this.topBarRow()
+      }
+      .width('100%')
+      .height('100%')
+      .justifyContent(FlexAlign.Center)
+      .backgroundColor(this.pageBackground())
+    }
+  }
+
+  /**
+   * The top bar's three elements: 返回 · chapter title (centred) · page within the chapter.
+   *
+   * **Exactly three elements**, and the book title is deliberately absent: the shell used to
+   * draw its own row above this component with back + book title, and this component then drew
+   * the header string — the book title again — underneath it. That duplication is what this bar
+   * removes; the chapter name is drawn here because it arrives with `pageShow`, which only this
+   * component subscribes to.
+   *
+   * The title is centred within the space the two side elements leave, which is how it can
+   * truncate with an ellipsis instead of running under them. The two sides are close in width (a
+   * two-character 返回 and a fixed-width indicator), so the title sits within a few vp of the
+   * true centre; a `Stack` would centre it exactly and let a long title collide with both side
+   * controls, which is the worse trade.
+   *
+   * The vertical padding is the title bar's business now, not this row's: the container in
+   * `topBarTitle` is `TOP_BAR_HEIGHT` tall and centres this row in it, so the bar's height is a
+   * constant the layout can be reasoned about instead of a sum of paddings and glyph metrics.
+   */
+  @Builder
+  private topBarRow() {
     Row({ space: SPACE_XS }) {
       Button('返回')
         .fontSize(TYPE_BODY)
@@ -2174,150 +2278,318 @@ export struct ReaderView {
         .constraintSize({ minWidth: PAGE_INDICATOR_WIDTH })
     }
     .width('100%')
-    .padding({ left: SPACE_S, right: SPACE_M, top: SPACE_XS, bottom: SPACE_XS })
+    .padding({ left: SPACE_S, right: SPACE_M })
     .alignItems(VerticalAlign.Center)
-    .backgroundColor(this.pageBackground())
   }
 
   /**
-   * The bottom bar: a progress read-out and the four entries.
+   * The screen's three tap zones: left third = previous page · middle = reveal/hide the bars ·
+   * right third = next page.
    *
-   * ## The progress row is a display, not a control
+   * ## The geometry is the measured one
    *
-   * It is a `Progress`, and it is not a `Slider` — there is no drag affordance anywhere on
-   * this screen, and the shape says so: no handle, no track-wide hit area, no press
-   * feedback. That is the honest rendering of what the SDK can do, and the alternative was
-   * rejected rather than deferred:
+   * Three equal `layoutWeight(1)` columns of a full-width row, so the boundaries are the thirds
+   * of whatever width the page area has. Measured on the device, the kit's gesture node spans
+   * `x 0–1320 px` of a 1320 px screen, so the thirds are `0–440 / 440–880 / 880–1320 px` and the
+   * equal-weight row lands on exactly those boundaries.
    *
-   *  - Reader Kit has **no seek**. The controller's whole surface is `init`, `startPlay`,
-   *    `flipPage(isNext: boolean)`, `setPageConfig`, `releaseBook`, `registerBookParser`
-   *    and the two `on/off` pairs (`readerComponent.d.ets:210-351`). `flipPage` takes one
-   *    boolean and no count (`:257`), so a page target cannot be expressed at all.
-   *  - The only thing a release *could* do is jump to a chapter through
-   *    `startPlay(spineIndex, domPos)`, plus `getDomPosByCatalogHref` for the position
-   *    inside it (`bookParser.d.ts:118`; the catalog item's `href`/`idRef` it matches on
-   *    are declared at `:257` and `:247`). That is real, and `jumpToCatalog` already
-   *    uses it — but it is chapter-granular, so a slider that accepted a drag would land
-   *    somewhere visibly coarser than where the finger stopped, and the fraction→spine
-   *    mapping would have to *assume every chapter is the same length*, which is false for
-   *    real books. A control that lies about its resolution is worse than a read-out.
-   *  - "Call `flipPage` N times" is not implemented and is out of scope: a drag across the
-   *    bar would issue hundreds of calls into the kit with no cancellation.
+   * The row spans the whole page area, and the vertical extent is where this differs from the
+   * measurement: the kit's node was `y 319–2464 px` while the legacy bars took the top and bottom
+   * bands, and those bands are gone — the page `Stack` is now the whole screen and the bars float
+   * over it. So the zones cover the full page, which is what "the middle zone reveals the bars"
+   * needs: the reader taps the middle of the page, not the middle of a band.
    *
-   * ## The percentage
+   * ## Why `HitTestMode.Transparent`, and why that is not a preference
    *
-   * `progressPercent` is chapter-granular, from `progressFor`. See that method for what it
-   * assumes; the number is the same fraction the app persists and syncs, so this bar and
-   * the other clients' progress bars agree.
+   * Measured on the device: with `HitTestMode.Transparent` on this overlay the kit still receives
+   * the whole drag — the overlay got `Down → 19 × Move → Up` **and** the kit got
+   * `onActionStart`/`onActionEnd` and turned the page — while with `HitTestMode.Default` on the
+   * same overlay the kit's hit-test collection stops at the overlay and **the swipe dies**.
+   * Swiping still turns pages through the kit's own gesture, so `Transparent` is the only mode
+   * that can be used here.
+   *
+   * ## Why the sides call `flipPage` themselves
+   *
+   * Because this overlay's `onClick` **wins** the gesture arena against the kit's own
+   * tap-to-turn: measured, the arena gives the tap to whichever recogniser meets its condition
+   * first, and the overlay is the one that does. A left/right tap that did not turn the page
+   * itself would therefore be a tap that does nothing at all. `turnPage` stays the reader's one
+   * `flipPage` call site and keeps its `controllerReady` guard.
+   *
+   * The middle zone is the **only** thing that writes `barsVisible`; the outer two turn a page
+   * and touch no state, which is the approved state machine. There is no auto-hide and no
+   * tap-outside-to-dismiss, so a reader who reveals the bars keeps them until they say otherwise
+   * — including while 目录 / 书签 / 笔记 / 设置 are open, which the sheet composes *above* this
+   * component's tree.
    */
   @Builder
-  private progressRow() {
-    Row({ space: SPACE_S }) {
-      Text(this.progressPercentLabel())
-        .fontSize(TYPE_CAPTION)
-        .fontColor(this.chromeText())
-        .textAlign(TextAlign.Start)
-        .constraintSize({ minWidth: PERCENT_LABEL_WIDTH })
-      // `ProgressType.Linear` is the display-only shape. Its fill is not eased: this SDK
-      // offers `enableSmoothEffect` on the ring types only (the shell's sync card documents
-      // the same finding at its linear bar), so the setting's "off" answer here is "there
-      // was never an animation to disable" rather than a number this file picks.
-      Progress({ value: this.progressPercent, total: 100, type: ProgressType.Linear })
+  private tapZones() {
+    Row() {
+      Column()
         .layoutWeight(1)
-        .height(PROGRESS_TRACK_HEIGHT)
-        .color(this.chromeText())
-        .backgroundColor(this.chromeSurface())
-        // A 6 vp track: the label/badge radius (4) is the role the shell's own linear bar
-        // uses for the same element, and 同层统一 means the two agree.
-        .borderRadius(RADIUS_LABEL)
+        .height('100%')
+        .onClick((): void => {
+          this.turnPage(false);
+        })
+      Column()
+        .layoutWeight(1)
+        .height('100%')
+        .onClick((): void => {
+          this.toggleBars();
+        })
+      Column()
+        .layoutWeight(1)
+        .height('100%')
+        .onClick((): void => {
+          this.turnPage(true);
+        })
     }
     .width('100%')
-    .alignItems(VerticalAlign.Center)
+    .height('100%')
+    // Mandatory, not stylistic: see this builder's note. `Default` here kills the kit's swipe.
+    .hitTestBehavior(HitTestMode.Transparent)
+  }
+
+  /**
+   * Show or hide the two floating bars. **The only writer of `barsVisible`.**
+   *
+   * ## How this cannot drift from `sheetOpen`
+   *
+   * They are two independent facts and neither is derived from the other: `sheetOpen` is whether
+   * the reader's one sheet host is presenting, and it is the variable the framework's `$$`
+   * binding writes back; `barsVisible` is whether two overlays are painted. Nothing reads both,
+   * nothing writes both, and no branch combines them:
+   *
+   *  - the four sheet entry handlers do not touch `barsVisible`;
+   *  - no sheet callback (`onAppear`, `onDisappear`, `onWillDismiss`, `finishSheetClose`) touches
+   *    it either — the only other thing that reaches the bars' visibility is `topBarVisible`,
+   *    which reads the *failure* state and not the sheet's;
+   *  - a sheet is composed by the framework above this component's tree, so opening one covers
+   *    the bars rather than moving or hiding them.
+   *
+   * `tools/verify-reader-chrome.mjs` asserts that as a count — one writer, in this method, and
+   * none of the sheet's callbacks among them.
+   */
+  private toggleBars(): void {
+    this.barsVisible = !this.barsVisible;
+  }
+
+  // --- the progress row is gone ---------------------------------------------
+  //
+  // The bottom bar used to carry a percentage label and a display-only `Progress` track above
+  // the four entries. The user asked for the row to go, and this round is where it went: the bar
+  // is the four entries and nothing else.
+  //
+  // The capability it was an honest rendering of has not changed, and it is worth keeping the
+  // reason on the record so the row is not re-invented as a *control*:
+  //
+  //  - Reader Kit has **no seek**. The controller's whole surface is `init`, `startPlay`,
+  //    `flipPage(isNext: boolean)`, `setPageConfig`, `releaseBook`, `registerBookParser` and the
+  //    two `on/off` pairs (`readerComponent.d.ets:210-351`). `flipPage` takes one boolean and no
+  //    count (`:257`), so a page target cannot be expressed at all;
+  //  - the only thing a release *could* do is jump to a chapter through
+  //    `startPlay(spineIndex, domPos)`, plus `getDomPosByCatalogHref` for the position inside it
+  //    (`bookParser.d.ts:118`). That is real and `jumpToCatalog` uses it — but it is
+  //    chapter-granular, so a slider that accepted a drag would land somewhere visibly coarser
+  //    than where the finger stopped;
+  //  - "call `flipPage` N times" remains unimplemented, and `tools/verify-reader-chrome.mjs`
+  //    keeps asserting that.
+  //
+  // What went with the row is `progressPercent`, its `@State`, and the label that printed it:
+  // the fraction the app persists and syncs is `progressFor`, computed where it is used, and a
+  // second copy maintained for a read-out that no longer exists would be dead state.
+
+  /**
+   * The reader's bottom bar — the HDS **floating** bar carrying the four entries.
+   *
+   * ## The shape is measured, not chosen
+   *
+   * Four **real** `TabContent`s, each carrying a `BottomTabBarStyle`, inside an `HdsTabs` in the
+   * floating presentation. Every part of that sentence is a device result:
+   *
+   *  - a single `TabContent` with a custom `tabBar` builder **does not work** — the material is
+   *    accepted (no `Material inactive: out of scope`) and the builder's content is never laid
+   *    out, so the bar comes back empty;
+   *  - `.barHeight('auto')` makes the bar disappear entirely;
+   *  - the floating presentation needs **four** conditions together — `barFloatingStyle`,
+   *    `barOverlap(true)`, `vertical(false)` and `barPosition(BarPosition.End)` — and
+   *    `barSideMargin`/`barBottomMargin` must be **unit-bearing strings**, because HDS silently
+   *    drops a bare number (`ParseProp failed parse property barSideMargin`);
+   *  - with that shape on this device the material is accepted, the four cells render with
+   *    icons, each is hit-testable, a tap opens the right sheet, and `false` from
+   *    `onContentWillChange` stops the selection from moving.
+   *
+   * The material parameters are the shell's own, field for field (`Index.shellTabs` is the one
+   * place in this app where a material demonstrably renders on this device): `IMMERSIVE` at
+   * `ADAPTIVE`, which is the spec's 底部悬浮 answer as the framework implements it — the
+   * adaptation guide states that a floating bottom tab bar defaults to `THIN`, the style the
+   * spec prescribes for 底部悬浮, and the `gradientMask` in the page colour is the spec's
+   * 渐变颜色蒙层. `BlurStrategy.ADAPTIVE` follows the system's own policy on whether to blur
+   * rather than forcing it on.
+   *
+   * ## The four cells are entries, not tabs
+   *
+   * `index: 0` is fixed and `onContentWillChange` refuses every switch, so the bar has no second
+   * state to reach. All four `TabContent`s paint the same nothing (`emptyBarPage`), so even a
+   * switch that slipped past the refusal could not change what is on screen. The dispatch lives
+   * in `onTabBarClick` because `BottomTabBarStyle` carries no `onClick` of its own; the four
+   * handlers it calls are unchanged, each still carrying its own `if (this.loading) return;`
+   * guard, so the window before the first page is on screen is inert rather than absent.
+   *
+   * The icons are `chromeText()` for **both** the selected and the unselected state, and that is
+   * not a shortcut: cell 0 is permanently the selected one (the selection cannot move), so the
+   * alternative — the shell's `primary`/`mutedForeground` pair — would paint 目录 differently
+   * from the other three for no reason the reader could act on. The label's colour is **not**
+   * settable here: `LabelStyle` carries font, size, weight, overflow and line limits and no
+   * colour field, so the four labels wear the platform's own tab-label tone. That is exactly what
+   * the shell's working bar does.
+   *
+   * ## Why the box is `FLOATING_BAR_CLEARANCE` tall, and what that costs
+   *
+   * The `HdsTabs` is a bottom-anchored overlay of the page `Stack`, `FLOATING_BAR_CLEARANCE`
+   * (96 vp) tall — the number the shell already reserves under its own floating bar for this very
+   * component, so the reader and the shell agree on how much room the bar needs. It is **not**
+   * the whole page, because `Tabs` is a swipeable container: at full height its content region
+   * would take the reader's page-turn swipes away from the kit. The cost is stated rather than
+   * hidden: **while the bars are shown**, a tap inside that 96 vp band belongs to the bar and
+   * does not turn a page. While they are hidden the bar is `Visibility.None`, which is not
+   * hit-testable, so the band behaves as if the bar were not there — and hidden is the default.
+   */
+  @Builder
+  private bottomBar() {
+    HdsTabs({ barPosition: BarPosition.End, index: 0 }) {
+      this.bottomBarEntries()
+    }
+    .width('100%')
+    .height(FLOATING_BAR_CLEARANCE)
+    .barMode(BarMode.Fixed)
+    .barOverlap(true)
+    .vertical(false)
+    .barFloatingStyle({
+      // Unit-bearing **strings**, not numbers: HDS silently drops a bare number here
+      // (`ParseProp failed parse property barSideMargin`), a trap this project has hit.
+      barSideMargin: `${FLOATING_BAR_SIDE_MARGIN}vp`,
+      barBottomMargin: `${FLOATING_BAR_BOTTOM_MARGIN}vp`,
+      gradientMask: {
+        maskColor: this.pageBackground(),
+        maskHeight: FLOATING_BAR_MASK_HEIGHT,
+      },
+      systemMaterialEffect: {
+        materialType: hdsMaterial.MaterialType.IMMERSIVE,
+        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE,
+      },
+      barOpacity: 1,
+    })
+    // No `barHeight` call at all: the default stands, exactly as in the shell. `'auto'` was an
+    // earlier round's single change and it collapsed this bar rather than adapting it.
+    // Follow the system's own policy on whether to blur, rather than forcing it on.
+    .blurStrategy(BlurStrategy.ADAPTIVE)
+    // No `onChange`: the selection is not allowed to move, so a callback for its movement would
+    // be dead configuration. `onTabBarClick` is the dispatch, and it fires whether or not a
+    // switch is permitted.
+    .onTabBarClick((index: number): void => {
+      // 0 = 目录, 1 = 书签, 2 = 笔记, 3 = 设置 — the same four entry points the bar carried
+      // before this round, through the same handler methods.
+      if (index === 0) {
+        this.onEntryToc();
+      } else if (index === 1) {
+        this.onEntryBookmarks();
+      } else if (index === 2) {
+        this.onEntryNotes();
+      } else if (index === 3) {
+        this.onEntrySettings();
+      }
+    })
+    .onContentWillChange((currentIndex: number, comingIndex: number): boolean => {
+      // These cells are entry points, not tab switches: a tap that moved the selection would be
+      // a behaviour regression, not a cosmetic one.
+      return false;
+    })
+    // Bottom-anchored overlay of the page, and the third of the three facts that keep the
+    // measured page box independent of the bars. See this builder's note.
+    .position({ left: 0, bottom: 0 })
+    .visibility(this.barsVisible ? Visibility.Visible : Visibility.None)
+  }
+
+  /**
+   * What each of the four `TabContent`s paints: nothing.
+   *
+   * One builder shared by all four, so "a switch cannot change what the user sees" is structural
+   * rather than a promise. `Color.Transparent` because the bar is a floating capsule over the
+   * page: a painted page here would be a slab behind it.
+   */
+  @Builder
+  private emptyBarPage() {
+    Column()
+      .width('100%')
+      .height('100%')
+      .backgroundColor(Color.Transparent)
   }
 
   /**
    * The four entries, exactly: 目录 / 书签 / 笔记 / 设置.
    *
-   * There is **no 搜索** entry — search is out of scope — and no fifth control of any kind.
+   * There is **no 搜索** entry — search is out of scope — and no fifth cell of any kind. What
+   * each one does is unchanged from the bar this replaces, and each is still the closest thing
+   * that already exists in this screen rather than invented behaviour:
    *
-   * What each one does is not decided yet, so each is wired to the closest thing that
-   * already exists in this screen and left as a marked entry point rather than filled in
-   * with invented behaviour:
+   *  - **目录** — `onEntryToc`, the TOC sheet (`ReaderSheetMode.TOC`), the complete feature: the
+   *    list built by `buildToc` and the jump through `jumpToCatalog`.
+   *  - **书签** — `onEntryBookmarks`, the bookmark sheet, an empty state; the bookmark *list*
+   *    lives in the shell's 书签笔记 tab (`AnnotationsPage`), which is a separate screen.
+   *  - **笔记** — `onEntryNotes`, the note sheet, same situation.
+   *  - **设置** — `onEntrySettings`, the reader's 字号 sheet. The app-level settings
+   *    (主题/动效/同步) remain on the shelf's 设置 tab.
    *
-   *  - **目录** — `onEntryToc`, the TOC sheet (`ReaderSheetMode.TOC`), the complete feature:
-   *    the list built by `buildToc` and the jump through `jumpToCatalog`.
-   *  - **书签** — `onEntryBookmarks`, the bookmark sheet: it creates a bookmark at the
-   *    current page. This is the only bookmark affordance inside the reader; the bookmark
-   *    *list* lives in the shell's 书签笔记 tab (`AnnotationsPage`), which is a separate
-   *    screen and not reachable from here without new navigation.
-   *  - **笔记** — `onEntryNotes`, the note composer, same situation.
-   *  - **设置** — `onEntrySettings`, the reader's existing 字号 panel. That panel is
-   *    the reader's own settings surface and is the only place font size can be changed;
-   *    the app-level settings (主题/动效/同步) remain on the shelf's 设置 tab.
-   *
-   * The first three open one sheet between them — the entry picks the mode. Three separate
-   * `bindSheet` bindings is what this replaced; see `sheetOpen`.
+   * The four share **one** sheet host, differing only in `ReaderSheetMode`; three separate
+   * `bindSheet` bindings is what that replaced, and it is what made two of the four entries dead.
+   * See `sheetOpen`.
    */
   @Builder
-  private bottomEntries() {
-    Row({ space: SPACE_XS }) {
-      Button('目录')
-        .fontSize(TYPE_BODY)
-        .layoutWeight(1)
-        .backgroundColor(Color.Transparent)
-        .fontColor(this.chromeText())
-        .borderRadius(RADIUS_CONTROL)
-        .constraintSize({ minHeight: MIN_TAP_TARGET })
-        .clickEffect(this.animationOn ? Motion.clickEffect() : null)
-        .onClick((): void => {
-          this.onEntryToc();
-        })
-      Button('书签')
-        .fontSize(TYPE_BODY)
-        .layoutWeight(1)
-        .backgroundColor(Color.Transparent)
-        .fontColor(this.chromeText())
-        .borderRadius(RADIUS_CONTROL)
-        .constraintSize({ minHeight: MIN_TAP_TARGET })
-        .clickEffect(this.animationOn ? Motion.clickEffect() : null)
-        .onClick((): void => {
-          this.onEntryBookmarks();
-        })
-      Button('笔记')
-        .fontSize(TYPE_BODY)
-        .layoutWeight(1)
-        .backgroundColor(Color.Transparent)
-        .fontColor(this.chromeText())
-        .borderRadius(RADIUS_CONTROL)
-        .constraintSize({ minHeight: MIN_TAP_TARGET })
-        .clickEffect(this.animationOn ? Motion.clickEffect() : null)
-        .onClick((): void => {
-          this.onEntryNotes();
-        })
-      Button('设置')
-        .fontSize(TYPE_BODY)
-        .layoutWeight(1)
-        .backgroundColor(Color.Transparent)
-        .fontColor(this.chromeText())
-        .borderRadius(RADIUS_CONTROL)
-        .constraintSize({ minHeight: MIN_TAP_TARGET })
-        .clickEffect(this.animationOn ? Motion.clickEffect() : null)
-        .onClick((): void => {
-          this.onEntrySettings();
-        })
+  private bottomBarEntries() {
+    TabContent() {
+      this.emptyBarPage()
     }
-    .width('100%')
-  }
+    .tabBar(new BottomTabBarStyle(
+      { normal: new SymbolGlyphModifier($r('sys.symbol.list_bullet_circle')) }, '目录')
+      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
+      .iconStyle({
+        selectedColor: this.chromeText(),
+        unselectedColor: this.chromeText(),
+      }))
 
-  @Builder
-  private bottomBar() {
-    Column({ space: SPACE_S }) {
-      this.progressRow()
-      this.bottomEntries()
+    TabContent() {
+      this.emptyBarPage()
     }
-    .width('100%')
-    .padding({ left: SPACE_M, right: SPACE_M, top: SPACE_S, bottom: SPACE_S })
-    .backgroundColor(this.pageBackground())
+    .tabBar(new BottomTabBarStyle(
+      { normal: new SymbolGlyphModifier($r('sys.symbol.bookmark_fill')) }, '书签')
+      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
+      .iconStyle({
+        selectedColor: this.chromeText(),
+        unselectedColor: this.chromeText(),
+      }))
+
+    TabContent() {
+      this.emptyBarPage()
+    }
+    .tabBar(new BottomTabBarStyle(
+      { normal: new SymbolGlyphModifier($r('sys.symbol.notepad')) }, '笔记')
+      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
+      .iconStyle({
+        selectedColor: this.chromeText(),
+        unselectedColor: this.chromeText(),
+      }))
+
+    TabContent() {
+      this.emptyBarPage()
+    }
+    .tabBar(new BottomTabBarStyle(
+      { normal: new SymbolGlyphModifier($r('sys.symbol.gearshape')) }, '设置')
+      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
+      .iconStyle({
+        selectedColor: this.chromeText(),
+        unselectedColor: this.chromeText(),
+      }))
   }
 
   // --- the four entry points -------------------------------------------------
@@ -2890,270 +3162,111 @@ export struct ReaderView {
     .borderColor(this.sheetCardEdge())
   }
 
-  // =========================================================================
-  // TEMPORARY DIAGNOSTIC — material-scope probe. Delete with `DIAG_MATERIAL_TABS`.
-  //
-  // Four real `TabContent`s, each carrying a `BottomTabBarStyle` — the ordinary `Tabs`
-  // shape, and the exact shape the shell's bar uses (`Index.tabItems` + `shellTabs`). The
-  // reading surface stays *underneath* the surface (every tab page paints nothing) so that
-  // "is the material actually there" stays answerable from a screenshot: a translucent
-  // capsule shows the page through it, an out-of-scope surface comes back as an opaque slab.
-  //
-  // The bar is deliberately NOT `this.bottomBar()`: that one is left exactly as it was, so
-  // the probe changes nothing about the existing screen — including the four real entries,
-  // which stay below this surface and keep working.
-  // =========================================================================
-
-  /** TEMPORARY DIAGNOSTIC: the probe's controller, as the shell's floating bar has one. */
-  private diagHdsController: HdsTabsController = new HdsTabsController();
-
   /**
-   * TEMPORARY DIAGNOSTIC: what each of the four `TabContent`s paints — nothing.
+   * The reader screen: **one page area, and two floating bars over it.**
    *
-   * One builder shared by all four, so "a switch cannot change what the user sees" is
-   * structural rather than a promise. `onAppear` is the cheap build log: it fires once per
-   * tab page that actually composes, which is the signal the previous round's
-   * single-`TabContent`-plus-custom-`tabBar` shape never produced.
-   */
-  @Builder
-  private diagMaterialPage() {
-    Column() {
-    }
-    .width('100%')
-    .height('100%')
-    .backgroundColor(Color.Transparent)
-    .onAppear((): void => {
-      hilog.info(DOMAIN, TAG, 'diag material tabs: a tab page composed');
-    })
-    .onAreaChange((oldValue: Area, newValue: Area): void => {
-      hilog.info(DOMAIN, TAG,
-        'diag material tabs: tab page area %{public}s x %{public}s vp (was %{public}s x %{public}s)',
-        `${lengthToNumber(newValue.width)}`, `${lengthToNumber(newValue.height)}`,
-        `${lengthToNumber(oldValue.width)}`, `${lengthToNumber(oldValue.height)}`);
-    })
-  }
-
-  /** TEMPORARY DIAGNOSTIC: 目录 / 书签 / 笔记 / 设置 as HDS bottom-bar cells. */
-  @Builder
-  private diagMaterialEntries() {
-    TabContent() {
-      this.diagMaterialPage()
-    }
-    .tabBar(new BottomTabBarStyle(
-      { normal: new SymbolGlyphModifier($r('sys.symbol.list_bullet_circle')) }, '目录')
-      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
-      .iconStyle({
-        selectedColor: this.chromeText(),
-        unselectedColor: this.chromeMuted(),
-      }))
-
-    TabContent() {
-      this.diagMaterialPage()
-    }
-    .tabBar(new BottomTabBarStyle(
-      { normal: new SymbolGlyphModifier($r('sys.symbol.bookmark_fill')) }, '书签')
-      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
-      .iconStyle({
-        selectedColor: this.chromeText(),
-        unselectedColor: this.chromeMuted(),
-      }))
-
-    TabContent() {
-      this.diagMaterialPage()
-    }
-    .tabBar(new BottomTabBarStyle(
-      { normal: new SymbolGlyphModifier($r('sys.symbol.notepad')) }, '笔记')
-      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
-      .iconStyle({
-        selectedColor: this.chromeText(),
-        unselectedColor: this.chromeMuted(),
-      }))
-
-    TabContent() {
-      this.diagMaterialPage()
-    }
-    .tabBar(new BottomTabBarStyle(
-      { normal: new SymbolGlyphModifier($r('sys.symbol.gearshape')) }, '设置')
-      .labelStyle({ font: { size: TYPE_CAPTION, weight: FontWeight.Medium } })
-      .iconStyle({
-        selectedColor: this.chromeText(),
-        unselectedColor: this.chromeMuted(),
-      }))
-  }
-
-  /** TEMPORARY DIAGNOSTIC: the material surface under test. */
-  @Builder
-  private diagMaterialTabs() {
-    HdsTabs({ barPosition: BarPosition.End, index: 0, controller: this.diagHdsController }) {
-      this.diagMaterialEntries()
-    }
-    .width('100%')
-    .height('100%')
-    .barMode(BarMode.Fixed)
-    // The floating presentation has four required conditions together, and the shell's
-    // working bar states all of them: barFloatingStyle, barOverlap(true), vertical(false)
-    // and barPosition(BarPosition.End).
-    .barOverlap(true)
-    .vertical(false)
-    .barFloatingStyle({
-      // Unit-bearing **strings**, not numbers: HDS silently drops a bare number here
-      // (`ParseProp failed parse property barSideMargin`), a trap this project has hit.
-      barSideMargin: '16vp',
-      barBottomMargin: '8vp',
-      gradientMask: {
-        maskColor: this.pageBackground(),
-        maskHeight: DIAG_MATERIAL_MASK_HEIGHT,
-      },
-      systemMaterialEffect: {
-        materialType: hdsMaterial.MaterialType.IMMERSIVE,
-        materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE,
-      },
-      barOpacity: 1,
-    })
-    // No `barHeight` call at all: the default stands, exactly as in the shell. `'auto'` was
-    // an earlier round's single change and it collapsed this bar rather than adapting it.
-    // Follow the system's own policy on whether to blur, rather than forcing it on.
-    .blurStrategy(BlurStrategy.ADAPTIVE)
-    // Instrumentation, all of it inside the probe, so that "the cells rendered" and "the
-    // material was accepted" are separately observable on the device:
-    //   - `onAreaChange` — the surface's own box, so "it laid out" is a number rather than
-    //     an inference from a screenshot;
-    //   - `onTabBarClick` — the callback that fires on a cell tap whether or not the switch
-    //     is permitted. It carries the entry dispatch *and* is the proof that a cell
-    //     occupies real hit-test area at that index: a cell that did not render cannot be
-    //     clicked, so this log is the shape question's answer;
-    //   - `onChange` — fires only if the selection actually moved;
-    //   - `onContentWillChange` — the refusal, logged, so "the framework asked and was
-    //     refused" is distinguishable from "the framework never asked".
-    .onAreaChange((oldValue: Area, newValue: Area): void => {
-      hilog.info(DOMAIN, TAG,
-        'diag material tabs: surface area %{public}s x %{public}s vp (was %{public}s x %{public}s)',
-        `${lengthToNumber(newValue.width)}`, `${lengthToNumber(newValue.height)}`,
-        `${lengthToNumber(oldValue.width)}`, `${lengthToNumber(oldValue.height)}`);
-    })
-    .onTabBarClick((index: number): void => {
-      hilog.info(DOMAIN, TAG, 'diag material tabs: cell %{public}d pressed', index);
-      // 0 = 目录, 1 = 书签, 2 = 笔记, 3 = 设置: the same four entry points the real bottom bar
-      // calls, through the same handler methods, each with its own `if (this.loading)
-      // return;` guard still in force inside the handler.
-      if (index === 0) {
-        this.onEntryToc();
-      } else if (index === 1) {
-        this.onEntryBookmarks();
-      } else if (index === 2) {
-        this.onEntryNotes();
-      } else if (index === 3) {
-        this.onEntrySettings();
-      }
-    })
-    .onChange((index: number): void => {
-      hilog.info(DOMAIN, TAG, 'diag material tabs: selection moved to %{public}d', index);
-    })
-    .onContentWillChange((currentIndex: number, comingIndex: number): boolean => {
-      hilog.info(DOMAIN, TAG, 'diag material tabs: switch asked %{public}d -> %{public}d, refused',
-        currentIndex, comingIndex);
-      // These cells are entry points, not tab switches: a tap that moved the selection
-      // would be a behaviour regression, not a cosmetic one.
-      return false;
-    })
-  }
-
-  /**
-   * The reader screen: top bar · page · bottom bar.
+   * ## The page box cannot move, and that is the structure rather than a promise
    *
-   * Three bands and nothing else, which is the whole of the approved design:
+   * The outer `Stack` is the overlay layer: it takes the whole window (`layoutWeight(1)` ×
+   * `width('100%')`), and its size comes from the column, not from its children. The inner
+   * `Stack` is the **page layer** — the kit's panel and the pagination spinner — and it is the
+   * box `viewWidth`/`viewHeight` are measured from and the kit paginates into.
    *
-   *  - **Top bar** — 返回 · chapter title (centred) · page within the chapter. Exactly
-   *    three elements and no refresh control; `topBar` carries the reasoning, including
-   *    why the page indicator prints no denominator.
-   *  - **Body** — the kit's page panel, and nothing overlaid on it. The `Stack` here
-   *    exists for the pagination spinner alone: the Android build floats three
-   *    translucent round buttons over the text (translate / TTS / AI) and none of the
-   *    three is being built, so there is no chip, no floating control and no scrim.
-   *  - **Bottom bar** — the display-only progress read-out plus 目录 / 书签 / 笔记 / 设置.
-   *    `bottomBar` explains why the bar is not a slider, and why there are exactly four
-   *    entries and no 搜索.
+   * Both bars are children of the outer `Stack`, `position`-ed to the top and bottom edges, so
+   * they are overlays of the page layer and never bands of it. That is the whole of the fix for
+   * the trap this screen used to carry: the legacy bottom bar occupied layout space, so holding
+   * it back once made the first `setPageConfig` paginate a box ~95 vp too tall and the bar's
+   * later arrival re-paginated the page in front of a reader who had already started reading.
+   * A bar that is a sibling *overlay* cannot do that — showing and hiding it is not a layout
+   * event for the page layer at all, at any moment, not merely "from the first frame".
+   * `tools/verify-reader-chrome.mjs` asserts the structure (both bars inside the page `Stack`,
+   * both `position`-ed, the measured box taken from the page layer) rather than restating this
+   * paragraph.
    *
-   * Both bars are the application theme's page colour (`pageBackground()`), so the reading
-   * surface is one flat opaque tone from top to bottom — that is the "opaque only"
-   * decision. The one element that has to be *seen* rather than blend in is the progress
-   * track, which is why `chromeSurface()` is a step off the page colour: a track in the
-   * same colour as the bar behind it would have no contrast at all.
+   * ## The blur is on the page layer, and that is why the layers are separate
+   *
+   * `foregroundBlurStyle` is the 毛玻璃 drawn behind an open sheet, and it belongs on the **page**
+   * only: on the outer stack it would frost the two bars as well, and a material with a blur
+   * stacked on it is the repeated work the 沉浸光感 power guidance rules out (「避免与模糊效果
+   * 叠加」). `sheetBlurStyle` carries the mechanism, the gate and the naming rule.
+   *
+   * ## The order of the children is the interaction model
+   *
+   *   1. the page layer — the kit's panel, and the pagination spinner over it;
+   *   2. the transient chip, an overlay since this round so a message can no longer resize the
+   *      page. (It is unreachable today — `flash()` has no caller — and this keeps it harmless
+   *      if it ever gets one.);
+   *   3. the three tap zones, `HitTestMode.Transparent`, so the kit keeps its drags;
+   *   4. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
+   *      and is not also a page turn. Material does not affect hit testing — it paints
+   *      background, border, blur and shadow and nothing else — so this ordering is the entire
+   *      mechanism that gives a bar its own taps. A hidden bar is `Visibility.None`, which is
+   *      also not hit-testable, so "the bars are down" and "the zones own the page" are one
+   *      statement rather than two that have to agree.
+   *
+   * The failure screen is the one alternative inside that structure: the kit is replaced by the
+   * message, the zones and the bottom bar are absent (there is no page to turn and no entries
+   * that could act), and the top bar is forced visible by `topBarVisible` — 返回 is drawn by
+   * `topBarRow`, so without it a book that failed to open would have no way out but the system
+   * back gesture.
+   *
+   * The bars are the application theme's own tones: the top bar is the system material or
+   * `pageBackground()`, the bottom bar is the HDS floating style with the page colour as its
+   * gradient mask. See `topBar` and `bottomBar` for why each takes the route it does.
    */
   build() {
     Column() {
-      // --- top bar -----------------------------------------------------------
-      this.topBar()
-
-      // Transient confirmation for an action with no visible result of its own. Drawn
-      // under the top bar rather than over the page: it is chrome, and the page area is
-      // deliberately left clean.
-      if (this.toastText.length > 0) {
-        Text(this.toastText)
-          .fontSize(TYPE_CAPTION)
-          .padding({ left: 12, right: 12, top: 6, bottom: 6 })
-          .borderRadius(RADIUS_CHIP)
-          .backgroundColor(this.chromeSurface())
-          .fontColor(this.chromeText())
-          .margin({ bottom: SPACE_XS })
-      }
-
-      if (this.errorText.length > 0) {
-        Column({ space: 10 }) {
-          Text('无法打开这本书')
-            .fontSize(16)
-            .fontWeight(FontWeight.Medium)
-          Text(this.errorText)
-            .fontSize(13)
-            .fontColor($r('sys.color.font_secondary'))
-            .textAlign(TextAlign.Center)
-        }
-        .width('100%')
-        .layoutWeight(1)
-        .justifyContent(FlexAlign.Center)
-        .padding(24)
-      } else {
-        // --- the page, and nothing over it ------------------------------------
+      Stack() {
+        // --- the page layer: measured, blurred, and the only band there is ---------
         Stack() {
-          // The kit's own page panel. `readerCallback` fires once the panel has
-          // created its controller, which is when `init()` may be called.
-          ReadPageComponent({
-            controller: this.controller,
-            readerCallback: (err: BusinessError, created: readerCore.ReaderComponentController): void => {
-              if (err !== null && err !== undefined) {
-                this.fail(`阅读组件创建失败：${messageOf(err)}`);
-                return;
-              }
-              // Take the controller the panel built. See the field's comment: the
-              // instance created above is only what the panel was handed.
-              this.controller = created;
-              this.initialize();
-            },
-          })
-            .width('100%')
-            .height('100%')
-
-          if (this.loading) {
+          if (this.errorText.length > 0) {
             Column({ space: 10 }) {
-              LoadingProgress().width(32).height(32)
-              Text('正在排版...')
+              Text('无法打开这本书')
+                .fontSize(16)
+                .fontWeight(FontWeight.Medium)
+              Text(this.errorText)
                 .fontSize(13)
                 .fontColor($r('sys.color.font_secondary'))
+                .textAlign(TextAlign.Center)
             }
             .width('100%')
             .height('100%')
             .justifyContent(FlexAlign.Center)
-          }
+            .padding(24)
+          } else {
+            // The kit's own page panel. `readerCallback` fires once the panel has created its
+            // controller, which is when `init()` may be called.
+            ReadPageComponent({
+              controller: this.controller,
+              readerCallback: (err: BusinessError, created: readerCore.ReaderComponentController): void => {
+                if (err !== null && err !== undefined) {
+                  this.fail(`阅读组件创建失败：${messageOf(err)}`);
+                  return;
+                }
+                // Take the controller the panel built. See the field's comment: the instance
+                // created above is only what the panel was handed.
+                this.controller = created;
+                this.initialize();
+              },
+            })
+              .width('100%')
+              .height('100%')
 
-          // TEMPORARY DIAGNOSTIC — delete this `if` block with `DIAG_MATERIAL_TABS`.
-          // Last child of the page `Stack`, so the material surface sits above the kit's
-          // page panel and the page shows through its bar. No existing child changes.
-          if (DIAG_MATERIAL_TABS) {
-            this.diagMaterialTabs()
+            if (this.loading) {
+              Column({ space: 10 }) {
+                LoadingProgress().width(32).height(32)
+                Text('正在排版...')
+                  .fontSize(13)
+                  .fontColor($r('sys.color.font_secondary'))
+              }
+              .width('100%')
+              .height('100%')
+              .justifyContent(FlexAlign.Center)
+            }
           }
         }
-        .layoutWeight(1)
         .width('100%')
+        .height('100%')
         .onAreaChange((oldValue: Area, newValue: Area): void => {
           const width: number = lengthToNumber(newValue.width);
           const height: number = lengthToNumber(newValue.height);
@@ -3164,45 +3277,57 @@ export struct ReaderView {
             || Math.abs(height - this.viewHeight) > 1;
           this.viewWidth = width;
           this.viewHeight = height;
-          // Re-applying the config after a resize is what re-paginates: the kit
-          // paginates to the viewport it was told about, so a rotation without this
-          // leaves the page laid out for the old size.
+          // Re-applying the config after a resize is what re-paginates: the kit paginates to
+          // the viewport it was told about, so a rotation without this leaves the page laid
+          // out for the old size. A bar appearing is not a resize and must never reach here.
           if (changed && this.settingsApplied) {
             this.applySettings(this.live);
           }
         })
         // --- the blur outside the sheet (毛玻璃, not 沉浸光感) ------------------
         //
-        // On the page `Stack` — the kit's panel and the pagination spinner — and **not** on this
-        // component's root `Column`, because a foreground blur on the root would frost the top
-        // and bottom bars, which are the bars the user reads the chapter name and turns pages
-        // with. The sheet is unaffected either way: it is an overlay the framework composes
-        // above this component's tree, which is exactly why the page can be blurred while the
-        // sheet stays sharp. The reference blurs its whole page container, bars included; this
-        // is the same mechanism applied to the smaller region. `sheetBlurStyle` carries the
-        // mechanism, the exhaustive negative for the sheet's own options, and the gate.
+        // On the page layer — the kit's panel and the pagination spinner — and **not** on the
+        // overlay layer above it, because a foreground blur there would frost the two bars.
+        // The sheet is unaffected either way: it is an overlay the framework composes above
+        // this component's tree, which is exactly why the page can be blurred while the sheet
+        // stays sharp. The reference blurs its whole page container, bars included; this is the
+        // same mechanism applied to the smaller region. `sheetBlurStyle` carries the mechanism,
+        // the exhaustive negative for the sheet's own options, and the gate.
         .foregroundBlurStyle(
           this.sheetBlurStyle(),
           { colorMode: ThemeColorMode.SYSTEM, adaptiveColor: AdaptiveColor.DEFAULT })
-      }
 
-      // --- bottom bar --------------------------------------------------------
-      // Drawn for the whole life of an open book, **including while it is still being
-      // paginated**, and that is deliberate rather than incidental.
-      //
-      // The bar takes about 95 vp off the page area. If it were held back until the first
-      // page arrived, the first `setPageConfig` and `startPlay` (which run while `loading`
-      // is still true) would paginate a box that is 95 vp too tall, and the bar's arrival
-      // would then fire `onAreaChange` with a changed height and re-paginate the page a
-      // second time — a visible reflow of the text the person has just started reading.
-      // So the page box is fixed from the first layout and the kit is configured for it
-      // once.
-      //
-      // What keeps the bar honest during that window is the entries' own guards, not their
-      // absence: see `onEntryToc` and the three beside it.
-      if (this.errorText.length === 0) {
-        this.bottomBar()
+        // --- the transient confirmation -------------------------------------------
+        //
+        // Chrome, so it is drawn sharp (outside the page layer's blur) and under the zones in
+        // hit-test terms: the `Text` carries no handler and this wrapper is `Transparent`, so a
+        // tap on the chip is a tap on the page. The wrapper is full-size and pinned to the top
+        // so the chip sits below the top bar's area rather than moving anything.
+        if (this.toastText.length > 0) {
+          Column() {
+            Text(this.toastText)
+              .fontSize(TYPE_CAPTION)
+              .padding({ left: 12, right: 12, top: 6, bottom: 6 })
+              .borderRadius(RADIUS_CHIP)
+              .backgroundColor(this.chromeSurface())
+              .fontColor(this.chromeText())
+          }
+          .width('100%')
+          .height('100%')
+          .justifyContent(FlexAlign.Start)
+          .padding({ top: TOP_BAR_HEIGHT, left: SPACE_M, right: SPACE_M })
+          .hitTestBehavior(HitTestMode.Transparent)
+        }
+
+        // --- the three tap zones, then the two bars over them ---------------------
+        if (this.errorText.length === 0) {
+          this.tapZones()
+          this.bottomBar()
+        }
+        this.topBar()
       }
+      .layoutWeight(1)
+      .width('100%')
     }
     .width('100%')
     .height('100%')

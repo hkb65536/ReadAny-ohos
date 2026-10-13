@@ -249,7 +249,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * the frost off one that is. `onDisappear`'s clear stays unconditional, so the gate can still
  * never outlive the sheet. `sheetOpen = false` is still written exactly once.
  */
-export const BUILD_STAMP: string = 'build 2026-10-13 r98 (blur-repair-cycle)';
+export const BUILD_STAMP: string = 'build 2026-10-13 r100 (floating-reader-bars)';
 
 /**
  * A byte count as something a person can read.

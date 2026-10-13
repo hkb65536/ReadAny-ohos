@@ -66,6 +66,30 @@ export function immersiveMaterialOption(): Object {
   });
 }
 
+/**
+ * The material for a bar that **floats at the top** of a page: `ULTRA_THIN`.
+ *
+ * The style is the design specification's own choice for this position, not a preference:
+ * 「当组件在顶部悬浮时，推荐使用 ULTRA_THIN 枚举参数，并结合渐变模糊效果延展顶部内容展示空间」
+ * (沉浸光感 · 场景规范). `ULTRA_THIN` is the thinnest layer the enum offers (「材质层超薄，具有很强
+ * 的透明效果」), and the adaptation guide's summary for navigation-class components is the same
+ * direction — 「导航类组件通常使用较薄的材质样式（ULTRA_THIN或THIN）」.
+ *
+ * `materialColor` is deliberately **not** set here. On a thin layer the tint is what the filter
+ * works with, and the reader's page can be any of three theme tones; leaving it unset lets the
+ * framework tint the layer from what is behind it, which is the behaviour a floating reading bar
+ * wants. The menu's material sets it because a menu must stay recognisably the app's card.
+ *
+ * Same guarded contract as `immersiveMaterialOption` above: this is only reached through
+ * `topBarMaterialOption` in `Theme.ets`, which checks the API level and the device's support
+ * before calling it, so an API-24 device never evaluates the API-26 namespace.
+ */
+export function immersiveTopBarMaterialOption(): Object {
+  return new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+  });
+}
+
 /** Whether the device reports support for the immersive effect. */
 export function deviceSupportsImmersiveMaterial(): boolean {
   if (!canApplyImmersiveMaterial()) {

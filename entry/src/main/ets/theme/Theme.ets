@@ -698,6 +698,57 @@ export function materialOption(): Object | undefined {
   }
 }
 
+/**
+ * The material for the reader's **floating top bar**, or `undefined` for the opaque bar.
+ *
+ * The caller is `ReaderView.topBarTitle`, which branches on this answer: ArkTS cannot apply an
+ * attribute conditionally in one component call, so the one place a system material may be
+ * applied on that screen exists twice — once with the material and once painted
+ * `pageBackground()`.
+ *
+ * `undefined` is the answer on the same three paths `menuMaterialOption` documents, and they are
+ * the reason the opaque branch has to exist rather than be a fallback nobody reaches:
+ *
+ *  1. **The API is absent** (a pre-26 runtime). This is the guard the reader's top bar needs and
+ *     the reason it cannot simply apply the attribute: `uiMaterial.ImmersiveMaterial` is
+ *     `@since 26.0.0`, so on an API-24 device the namespace does not exist and the object cannot
+ *     be constructed at all. `materialOption()` answers `undefined` there, before anything
+ *     touches it.
+ *  2. **The device reports no immersive-material support** — a device fact independent of the
+ *     API level.
+ *  3. **The device's material level is `SMOOTH`** — the low-compute level, where the material
+ *     stops being a filter over this app's surface and *becomes* the surface, painted from the
+ *     system's palette. A system material knows only light from dark, so at that level a sepia
+ *     reader would come back with a white or black bar. The app keeps the surface it has
+ *     verified — the opaque page tone — instead. Same refusal, same reasoning as the menu's.
+ *
+ * `ULTRA_THIN` rather than the menu's `THICK`: this is a bar that floats at the top of a page,
+ * which is the position the design spec prescribes the thinnest layer for.
+ * `immersiveTopBarMaterialOption` carries the citation.
+ *
+ * **Where the caller may put it.** The universal `systemMaterial` attribute is out of scope on
+ * anything but a `Navigation`/`NavDestination` title bar or a horizontal `Tabs` bottom `TabBar`
+ * with `barPosition: BarPosition.End` — the framework discards it elsewhere with
+ * `Material inactive: out of scope`. The reader's top bar is a `Navigation` title bar for
+ * exactly that reason, and this object is not for its options object
+ * (`NavigationTitleOptions.systemMaterial` is the same API-26 field by another route); it goes
+ * on the container inside the title builder, which is the shape the official 正例 uses.
+ */
+export function topBarMaterialOption(): Object | undefined {
+  if (materialOption() === undefined) {
+    return undefined;
+  }
+  if (immersive.materialLevelPaintsBackground()) {
+    return undefined;
+  }
+  try {
+    return immersive.immersiveTopBarMaterialOption();
+  } catch (err) {
+    hilog.warn(DOMAIN, TAG, 'top bar material failed, using the page colour: %{public}s', String(err));
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The immersive material of a popup menu (沉浸光感)
 // ---------------------------------------------------------------------------
