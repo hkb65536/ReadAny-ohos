@@ -1,0 +1,12 @@
+{
+  "module": {
+    "name": "data",
+    "type": "har",
+    "description": "$string:data_desc",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ]
+  }
+}

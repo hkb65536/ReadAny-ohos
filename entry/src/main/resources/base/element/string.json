@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "ReadAny entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "ReadAny reading client"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "ReadAny"
+    },
+    {
+      "name": "reason_internet",
+      "value": "用于连接你自建的 WebDAV 服务，同步书籍、阅读进度、书签和笔记。"
+    },
+    {
+      "name": "reason_network_info",
+      "value": "用于判断当前是否在 Wi-Fi 网络，以便按你的设置只在 Wi-Fi 下同步。"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "module": {
+    "name": "core",
+    "type": "har",
+    "description": "$string:core_desc",
+    "deviceTypes": [
+      "phone",
+      "tablet",
+      "2in1"
+    ]
+  }
+}

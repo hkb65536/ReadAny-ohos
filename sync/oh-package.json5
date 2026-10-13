@@ -1,0 +1,11 @@
+{
+  "name": "sync",
+  "version": "0.1.0",
+  "description": "InkBoat WebDAV protocol primitives and client (depends only on core)",
+  "main": "Index.ets",
+  "author": "InkBoat",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "core": "file:../core"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "ReadAny entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "ReadAny reading client"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "ReadAny"
+    },
+    {
+      "name": "reason_internet",
+      "value": "Used to connect to your own WebDAV server to sync books, reading progress, bookmarks and notes."
+    },
+    {
+      "name": "reason_network_info",
+      "value": "Used to detect whether you are on Wi-Fi so syncing can follow your Wi-Fi-only preference."
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "InkBoat HarmonyOS entry module",
+  "main": "",
+  "author": "InkBoat",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "core": "file:../core",
+    "data": "file:../data",
+    "sync": "file:../sync"
+  }
+}

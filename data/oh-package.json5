@@ -1,0 +1,12 @@
+{
+  "name": "data",
+  "version": "0.1.0",
+  "description": "InkBoat RDBStore schema, migrations and repositories",
+  "main": "Index.ets",
+  "author": "InkBoat",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "core": "file:../core",
+    "sync": "file:../sync"
+  }
+}

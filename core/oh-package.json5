@@ -1,0 +1,9 @@
+{
+  "name": "core",
+  "version": "0.1.0",
+  "description": "InkBoat shared types, pure logic and utilities (no platform APIs)",
+  "main": "Index.ets",
+  "author": "InkBoat",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {}
+}

@@ -1,0 +1,1 @@
+# Define the obfuscation rules for the module's consumers.

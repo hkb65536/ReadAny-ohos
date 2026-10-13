@@ -1,0 +1,11 @@
+{
+  "modelVersion": "6.0.0",
+  "name": "inkboat",
+  "version": "0.1.0",
+  "description": "InkBoat — HarmonyOS client (WebDAV sync, reading, bookmarks, notes)",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.21"
+  }
+}

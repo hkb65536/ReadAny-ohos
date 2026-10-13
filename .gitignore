@@ -1,0 +1,25 @@
+# ---- DevEco Studio / hvigor 构建产物（由 ohpm install + hvigor 重建）----
+build/
+.hvigor/
+.cxx/
+oh_modules/
+
+# ---- 本地杂物：截图、临时备份、旧安装包 ----
+# AGENTS.md 硬约束 #7：备份一律放仓库根，绝不放 harmony/ 里，
+# 因为审计工具把 harmony/ 下的文件当活代码扫。这里机械地挡住手滑。
+dist/
+.backup-*/
+*.bak
+*.bak-*
+*.recovered.ets
+*.hap
+*.hsp
+*.har
+
+# ---- IDE / 系统 ----
+.idea/
+.cache/
+*.iml
+Thumbs.db
+desktop.ini
+.DS_Store
