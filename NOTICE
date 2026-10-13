@@ -1,0 +1,28 @@
+ReadAny-ohos — NOTICE
+
+This repository is a modified version of ReadAny. It is a work based on the
+Program within the meaning of section 5 of the GNU General Public License
+version 3.
+
+  Upstream project   : ReadAny — https://github.com/codedogQBY/ReadAny
+  Upstream copyright : Copyright (C) 2024 ReadAny Team
+  Upstream license   : GNU General Public License v3.0 or later
+  Modifications      : Copyright (C) 2026 hkb65536
+
+GPLv3 section 5(a) — notice that the work was modified:
+
+  This is a modified version of ReadAny. The modifications were made in 2026
+  by hkb65536, and consist of porting the upstream application to HarmonyOS
+  in ArkTS: the four core features (WebDAV sync, reading, bookmarks and
+  notes) are re-implemented against upstream's behaviour, the WebDAV sync
+  protocol is reused field by field, and part of the user-facing Chinese
+  text is taken from upstream's locale bundle.
+
+GPLv3 section 5(b) — notice that the work is released under this License:
+
+  This work as a whole is released under the GNU General Public License,
+  version 3 or (at your option) any later version. The complete text is in
+  the LICENSE file in this repository.
+
+The LICENSE file is the verbatim GNU GPL version 3 text as published by the
+Free Software Foundation. It is reproduced without modification.
