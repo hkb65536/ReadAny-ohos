@@ -120,9 +120,12 @@ const TOP_BAR_CAPSULE_HEIGHT: number = MIN_TAP_TARGET;
  * r104 the capsule was centred in a `TOP_BAR_HEIGHT`-tall box, so this gap *was*
  * `(TOP_BAR_HEIGHT - TOP_BAR_CAPSULE_HEIGHT) / 2`. Centring is no longer usable: the box is
  * `TOP_BAR_BOX_HEIGHT` (80 vp) and centring in it would move the capsule down by half the
- * increment — 12 vp — which is the one thing this round must not do. The capsule's top edge is
- * measured at `136 px = 40.3 vp` on the reference device (`topInsetVp` 36 + this 4) and it has
- * to stay there.
+ * increment — 12 vp — which is the one thing r104 must not do. The capsule's top edge was measured
+ * at `136 px = 40.3 vp` on the reference device (`topInsetVp` 36 + this 4) while the cutout was the
+ * only top band the bar cleared, and **since r106 it sits 3 vp lower, at 43 vp = 145 px**, because
+ * the bar's inset is now the taller status-bar band (131 px = 39 vp) rather than the cutout
+ * (120 px = 36 vp) — the status bar is drawn over the app while the bars are up. Either way the
+ * capsule is pinned to the box's *top*, so this gap is the only thing between them.
  *
  * Written as the expression rather than as `SPACE_XS` so the relationship survives: a later
  * round that changes `TOP_BAR_CAPSULE_HEIGHT` gets the matching top gap for free instead of one
@@ -186,9 +189,13 @@ const TOP_BAR_SHADOW_ROOM: number = SPACE_L;
  * places the capsule — and this is what the bar is *drawn* in. The extra 24 vp are all **below**
  * the capsule, because the box is top-anchored (`.position({ left: 0, top: this.topInsetVp })`)
  * and the capsule is pinned `TOP_BAR_CAPSULE_TOP_GAP` from the box's **top**; growing this number
- * therefore adds nothing above the capsule and cannot move it by a pixel. That is also why the
- * persistent title's anchor is derived from `TOP_BAR_HEIGHT` rather than from this constant: see
- * `persistentTitleAnchorVp`.
+ * therefore adds nothing above the capsule and cannot move it by a pixel.
+ *
+ * **Nothing outside the bar reads this constant.** Between r104 and r106 one thing did — the
+ * persistent chapter name's anchor was derived from `TOP_BAR_HEIGHT` precisely because it had to
+ * be invariant to this increment — and with that overlay removed (r106) the pair `TOP_BAR_HEIGHT`
+ * / `TOP_BAR_BOX_HEIGHT` is the bar's business and only the bar's. So a later change to this
+ * number no longer has a second reader to keep in step, and equally no longer needs one.
  *
  * **Both places that ask the framework for a height use this constant and must stay equal** —
  * the `Navigation`'s own `.height(...)` and `NavigationTitleOptions`' `height` inside
@@ -211,37 +218,16 @@ const TOP_BAR_SHADOW_ROOM: number = SPACE_L;
  */
 const TOP_BAR_BOX_HEIGHT: number = TOP_BAR_HEIGHT + TOP_BAR_SHADOW_ROOM;
 
-/**
- * How far the persistent chapter name's **box** sits from the page box's left edge, in vp.
- *
- * **`27` is Reader Kit's own `paddingLeft`, which is the body text's layout origin** — the kit's
- * `setPageConfig` log for this configuration prints `"paddingLeft":27, "paddingRight":27` (quoted
- * in `resolveViewPort`), so putting the title's box here aligns it with the text **box-to-box**,
- * which is the structurally right thing and what the user asked for (「和左边的文字对齐」).
- *
- * **Deliberately not on this project's `SPACE_` scale** (24 / 32): it is a platform metric being
- * matched, not a spacing decision, and rounding it to `SPACE_L` would put the title 3 vp to the
- * left of the text.
- *
- * **`103 px = 30.52 vp`, not 27 vp, is where the body's ink actually starts.** Measured over 24
- * body lines on the reference device: continuation lines start at 103–106 px, indented first
- * lines at 224–227 px (so the minimum is the true left edge), and the right ink edge is a hard
- * `1215 px = 360 vp`. The ~3.5 vp between the layout origin and the ink is the title's own glyph
- * bearing: putting the title's box *at* the ink edge would push its ink ~3.5 vp right of the
- * text's. So the box goes at the layout origin and **`103 px` is the post-change verification
- * target, not the input**.
- */
-const PERSISTENT_TITLE_LEFT: number = 27;
-
-/**
- * How far the persistent chapter name's box stops short of the page box's **right** edge, in vp.
- *
- * The overlay used `SPACE_L` on both sides so a long chapter name ellipsised inside the page
- * rather than running to the screen's edges; only the left inset changed this round, so the right
- * one keeps the theme constant it always had. The two are different numbers on purpose: the left
- * one is a metric being matched, this one is breathing room.
- */
-const PERSISTENT_TITLE_RIGHT: number = SPACE_L;
+// --- the persistent chapter name is gone (r106) ----------------------------------
+//
+// `PERSISTENT_TITLE_LEFT` (27) and `PERSISTENT_TITLE_RIGHT` (`SPACE_L`) stood here, and with them
+// the last constant that existed only for the always-on chapter name. Both had exactly one reader
+// — `chapterOverlay`'s own `padding` — so both went with it rather than staying as dead numbers a
+// later round would have to decide about. `PERSISTENT_TITLE_TOP` had already gone in r104, when
+// the anchor became a container height instead of a top padding.
+//
+// The user's decision (「那就去掉常驻标题。」) is recorded in full at `topBarRow`, which is now the
+// **only** surface in this file that draws the chapter name.
 
 /**
  * How far each floating bar travels on its way in, in vp.
@@ -1009,6 +995,15 @@ export struct ReaderView {
     } catch (err) {
       // Ignored: nothing is subscribed if initialization failed.
     }
+    // The status bar goes back to the app-wide baseline as the reader unmounts (r106). This is
+    // **unconditional** and it is the *single* unmount path: every exit — the 返回 button, the
+    // system back gesture, and the shell's own `closeReader` — removes this component, so all three
+    // are covered by one line here instead of three call sites in `Index`. It sits beside
+    // `releaseBook()` because the two are the same kind of statement: give back what the reader
+    // borrowed from the window/kit. Two arguments, no `enableAnimation`: the baseline is written
+    // the same way in `Index.applySystemAppearance`, and a status bar that eases *out* over a shell
+    // page that never had one would be motion about nothing.
+    this.applyReaderStatusBar(false);
   }
 
   /**
@@ -1875,9 +1870,23 @@ export struct ReaderView {
   /**
    * How far the floating top bar is held below the screen's top edge, in vp.
    *
+   * It is the window's **top avoid band**, and since r106 that band is read **ignoring
+   * visibility** — so it is the status bar's own height whether or not the status bar is currently
+   * drawn. That distinction is the whole point now that the status bar comes and goes with the
+   * bars: `getWindowAvoidArea(TYPE_SYSTEM)` respects `AvoidArea.visible` and therefore answers 0
+   * while the status bar is hidden, which would have placed this bar's top edge 3 vp *inside* the
+   * status-bar band the moment `toggleBars` showed it (36 vp of cutout vs 39 vp of status-bar
+   * band). See `resolveAvoidInsets` for the read, the syscap guard and the fallback.
+   *
+   * **It has exactly three readers, all of them the top bar's own geometry**: the write in
+   * `resolveAvoidInsets`, the log line beside it, and `topBar`'s `position`. (A fourth —
+   * `persistentTitleAnchorVp` — went with the persistent chapter name in r106.) It reaches neither
+   * `resolveViewPort()` nor `toKitSettings()` and never appears in `build()`, so it is a bar metric
+   * and cannot move the pagination box.
+   *
    * Zero until the window answers, and zero is also the correct answer for a device whose window
-   * reports no top avoid area at all — see `resolveAvoidInsets`. The bars are hidden at rest, so
-   * this arriving one frame late is not something the reader can see.
+   * reports no top avoid area at all. The bars are hidden at rest, so this arriving one frame late
+   * is not something the reader can see.
    */
   @State private topInsetVp: number = 0;
 
@@ -1921,34 +1930,61 @@ export struct ReaderView {
    *  - **`TYPE_SYSTEM = 0`** (`@since 7`) — "Default area of the system. It contains the status bar
    *    and three-button navigation bar." This is the documented proxy for a punch hole and the
    *    fallback when the cutout type reports nothing: `window-faqs` · 如何获取状态栏高度 —
-   *    「主窗口全屏时，可以通过 getWindowAvoidArea() 获取到包含状态栏的避让区域」.
+   *    「主窗口全屏时，可以通过 getWindowAvoidArea() 获取到包含状态栏的避让区域」. **Since r106 it is
+   *    read through `getWindowAvoidAreaIgnoringVisibility` where that is available** — see the
+   *    guard below, which is the one runtime check in this method.
    *  - **`TYPE_NAVIGATION_INDICATOR = 4`** (`@since 11`) — "Bottom navigation bar", the gesture
-   *    bar: 27.9 vp on the reference device (`SCBGestureNavBar14` = `[0, 2754, 1320, 94]`).
+   *    bar: 94 px = 28 vp on the reference device (`SCBGestureNavBar14` = `[0 1226 2848 94]` in the
+   *    window manager's own dump, whose rects are printed in the display's natural frame).
    *
-   * **No runtime guard on any of the three**, and that is the deliberate part: 7 / 7 / 11 are all
-   * far below this app's `compatibleSdkVersion` 24, so unlike `uiMaterial.ImmersiveMaterial`
-   * (`@since 26.0.0`, which `topBarMaterialOption` guards for API-24 devices) a version check here
+   * **Three of the four reads need no runtime guard, and the fourth is the exception.** 7 / 7 / 11
+   * are all far below this app's `compatibleSdkVersion` 24, so unlike `uiMaterial.ImmersiveMaterial`
+   * (`@since 26.0.0`, which `topBarMaterialOption` guards for API-24 devices) a *version* check here
    * would be dead code that reads as a live floor. (The SDK's other avoid-area member,
    * `TYPE_FLOAT_NAVIGATION = 5`, **is** `@since 26.0.0` — and is not read here for that reason as
    * well as because a float-navigation area is not this screen's problem.)
+   *
+   * `getWindowAvoidAreaIgnoringVisibility(type)` is a different kind of gate, and it is why this
+   * method is no longer a straight-line read. It is declared `@since 22` **and**
+   * `@syscap SystemCapability.Window.SessionManager` — not the `...WindowManager.Core` the other
+   * three reads carry — and it declares **`801 Capability not supported`**, "Failed to call the API
+   * due to limited device capabilities" (`@ohos.window.d.ts:4243-4277`). The API level is not the
+   * risk at `compatibleSdkVersion` 24; the *capability* is. So it is gated on
+   * **`canIUse('SystemCapability.Window.SessionManager')`** — the right test for this question,
+   * because a capability is what the declaration actually requires and a new API level does not
+   * imply one (`initialize()` makes the same distinction for Reader Kit) — and the fallback is
+   * **today's read**, so a device without the capability gets the r102–r105 geometry rather than an
+   * exception. A `.catch` inside the guard covers the other half: a device that declares the
+   * capability and still throws 801 keeps the fallback instead of losing the cutout inset with it.
+   *
+   * **Which path was taken is logged**, because whether a given device declares that capability is
+   * not something this side can assume. (On the reference device it does:
+   * `/system/etc/syscap.json` lists `SystemCapability.Window.SessionManager` under the
+   * `window_manager` component, so the invariant read is the live one there.)
    *
    * **The top inset is a maximum, not a choice between the two.** A punch hole is normally *inside*
    * the status-bar band, so the cutout's own height can be smaller than the band; taking the larger
    * of the two is what the official sample does
    * (`Math.max(topAvoidHeight, cutoutAvoidArea.topRect.height)`) and it is the safe direction —
-   * clearing the taller of the two always clears both. `top + height` rather than `height` alone
-   * because the rect is not guaranteed to start at the screen's top edge; a top-anchored band has
-   * `top === 0` and the two are then the same number.
+   * clearing the taller of the two always clears both. On the reference device that is what makes
+   * the inset **the status bar's 131 px rather than the cutout's 120 px** (39 vp, not 36).
+   * `top + height` rather than `height` alone because the rect is not guaranteed to start at the
+   * screen's top edge; a top-anchored band has `top === 0` and the two are then the same number.
    *
-   * **Both raw values are logged**, in px and in the unit they were converted from: if a device
-   * answers 0 for both, the bars stay exactly where r101 put them and the log is the evidence —
-   * this is a measurement this round could not take on the device, and guessing a constant here
-   * would push the bar down over the text on every device that has nothing to clear.
+   * **All three raw values are logged**, in px, and so is the path the status bar's number came
+   * from: if a device answers 0 for both top bands then the top bar stays where r101 put it, and the
+   * log is the evidence rather than a guess — the r102 round could not take this measurement on the
+   * device, and guessing a constant would push the bar down over the text on every device that has
+   * nothing to clear.
    *
    * **Read once, not subscribed.** The values are not live: the window publishes changes through
    * `on('avoidAreaChange')`, and wiring that is a separate behaviour rather than a second read —
    * a rotation re-paginates through the measured box anyway, and a landscape cutout is reported on
    * the *left* edge, which is a different inset than the one this screen places a top bar by.
+   * **Its documented triggers are also not this screen's event**: `avoidAreaChange` fires on
+   * full-screen / floating / split-screen transitions, rotation, fold/unfold and cross-device
+   * transfer — **status-bar visibility is not among them** — so it could not have replaced the read
+   * below even if subscribing were wanted.
    *
    * A failure is log-and-continue: the insets stay 0, which is the pre-r102 geometry and leaves the
    * reader fully usable.
@@ -1960,26 +1996,51 @@ export struct ReaderView {
       window.getLastWindow(context)
         .then((win: window.Window): void => {
           const cutout: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
-          const system: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
           const gesture: window.AvoidArea =
             win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+          // --- the status bar's band, read so that hiding it does not erase it (r106) ----
+          //
+          // `hasSessionManager` is the guard, and `invariant` records whether the guarded call
+          // actually produced the number — so a capability that is declared but throws still lands
+          // on the fallback rather than on zero.
+          const hasSessionManager: boolean =
+            canIUse('SystemCapability.Window.SessionManager');
+          let invariant: boolean = false;
+          let system: window.AvoidArea | undefined = undefined;
+          if (hasSessionManager) {
+            try {
+              system = win.getWindowAvoidAreaIgnoringVisibility(window.AvoidAreaType.TYPE_SYSTEM);
+              invariant = true;
+            } catch (err) {
+              hilog.warn(
+                DOMAIN,
+                TAG,
+                'avoid area ignoring visibility failed, falling back: %{public}s',
+                String(err),
+              );
+            }
+          }
+          if (!invariant) {
+            system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+          }
           const cutoutTopPx: number = topBandPx(cutout.topRect);
-          const systemTopPx: number = topBandPx(system.topRect);
+          const systemTopPx: number = system === undefined ? 0 : topBandPx(system.topRect);
           const gesturePx: number = bottomBandPx(gesture.bottomRect);
           // **Rounded up, deliberately, and not only for the log.** `px2vp` returns a fraction
-          // (195 px / 3.375 = 57.78 vp) and an inset is a *clearance*: the next whole vp is the safe
+          // (131 px / 3.375 = 38.81 vp) and an inset is a *clearance*: the next whole vp is the safe
           // direction, where the nearest one can be a fraction of a px short of the band it clears.
           // It also keeps the two values integers, which is what the log line below formats them as
-          // (`%{public}d`) and what `.diag/r102-capture.ps1` reads back out.
+          // (`%{public}d`) and what `.diag/r106-capture.ps1` reads back out.
           this.topInsetVp = Math.ceil(this.getUIContext().px2vp(Math.max(cutoutTopPx, systemTopPx)));
           this.bottomInsetVp = Math.ceil(this.getUIContext().px2vp(gesturePx));
           hilog.info(
             DOMAIN,
             TAG,
-            'avoid areas: cutout top %{public}d px, status bar top %{public}d px, gesture bar %{public}d px'
-              + ' -> top inset %{public}d vp, bottom inset %{public}d vp',
+            'avoid areas: cutout top %{public}d px, status bar top %{public}d px (%{public}s),'
+              + ' gesture bar %{public}d px -> top inset %{public}d vp, bottom inset %{public}d vp',
             cutoutTopPx,
             systemTopPx,
+            invariant ? 'ignoring visibility' : 'visibility-respecting fallback',
             gesturePx,
             this.topInsetVp,
             this.bottomInsetVp,
@@ -2019,7 +2080,7 @@ export struct ReaderView {
    *
    * **This is where the cost of the change is visible**, and it is the same cost `bottomBar`
    * documents for the box's height in general: the box *is* the band that belongs to the bar while
-   * the bars are shown, so the band grows by the inset (27.9 vp on the reference device, i.e. from
+   * the bars are shown, so the band grows by the inset (28 vp on the reference device, i.e. from
    * 120 to 148 vp). Hidden, the bar is not hit-testable — `opacity` 0 with
    * `HitTestMode.BLOCK_DESCENDANTS` since r104 — and the band costs nothing — and hidden
    * is the default. `tools/verify-reader-chrome.mjs` asserts both halves of that: the band is the
@@ -2543,158 +2604,44 @@ export struct ReaderView {
     }, TOAST_VISIBLE_MS);
   }
 
-  /**
-   * The persistent chapter name (常驻章节名) — a third floating overlay of the page.
-   *
-   * ## Why it is not in the top bar
-   *
-   * Because the top bar is hidden while the bars are down, and the title has to be visible then:
-   * that is what 常驻 means. So it is its own overlay, a sibling of the page layer inside the page
-   * `Stack`, declared **before** `topBar()` and `bottomBar()` so a revealed bar draws over it
-   * rather than the reverse — the same ordering rule the bars and the zones already obey.
-   *
-   * ## Exactly one chapter name is on screen at any moment
-   *
-   * The user's rule: **when the bars are shown the persistent title hides**, because the top bar
-   * carries a richer version of the same string (the chapter name plus the page within the
-   * chapter). `chapterOverlayVisible` states that as `!topBarVisible()`, so the two are
-   * complementary *by construction* rather than by two conditions that have to agree, and the
-   * invariant holds on all three of the top bar's states:
-   *
-   *  - bars down (the default) → `topBarVisible()` is false → the persistent title is up;
-   *  - bars up → `topBarVisible()` is true → the persistent title is `Visibility.None`;
-   *  - the failure screen, where `errorText` forces the top bar up for its 返回 → the persistent
-   *    title is down. `chapterTitle` is empty there in any case, so the two statements do not
-   *    even have a string to disagree about.
-   *
-   * The hidden state is `Visibility.None`, which is **not hit-testable**, and the visible state is
-   * wrapped in `HitTestMode.Transparent` besides — so this overlay can never take a tap from the
-   * three zones underneath it, whichever way the invariant is pointing. (This overlay keeps
-   * `Visibility`, unlike the two bars: it does not animate, and nothing about its placement needs
-   * a frame in which it is still rendered.)
-   *
-   * ## Where it sits, and why it had to move (r104)
-   *
-   * The user: 「常显的章节名称也有点问题，现在正好显示在前置摄像头的挖孔里，看不到。我想把它移到顶部导
-   * 航栏的左下角，和左边的文字对齐」. The first half is **measured**: the title's ink was at
-   * `y 58–94 px, x 545–776 px` — centred on `660.5`, the exact screen centre — and the punch hole
-   * is `120 px` deep, so it really was inside the lens. (The hole's left/right extent was never
-   * measured, only its 120 px depth, so the ~120 px circle centred on x=660 is inference rather
-   * than a result.) Getting out of the hole is the point of this round; the alignment is the
-   * other half of what the user asked for.
-   *
-   * **Horizontally** the box goes at `PERSISTENT_TITLE_LEFT` (27 vp — Reader Kit's own
-   * `paddingLeft`, i.e. the body text's layout origin) and the `Text` is `TextAlign.Start`. See
-   * that constant for why it is the *box* and not the *ink* that is placed there, and for the
-   * `103 px` post-change verification target.
-   *
-   * **Vertically** it is `persistentTitleAnchorVp()` — a derived expression, never a literal.
-   * That method carries the derivation and the reason it is invariant to `TOP_BAR_SHADOW_ROOM`;
-   * the short version is that anchoring to the bar's own 56 vp band keeps the title in the gap
-   * above the first line of body text, while anchoring to the grown drawing box would put it on
-   * top of that line.
-   *
-   * **It is implemented as a container height, not as `padding({ top })`.** A top padding would
-   * have to know the `TYPE_CAPTION` line box's height to put the text's *bottom* at the anchor,
-   * and **ArkUI publishes no font metric for that**. So the anchor is a container of exactly the
-   * derived height with `justifyContent(FlexAlign.End)` and `alignItems(HorizontalAlign.Start)`:
-   * bottom-aligned and left-aligned, with no font metric needed at all. The outer column stays
-   * `height('100%')` and pinned, so this is still a full-size `position`-anchored sibling of the
-   * page layer and still cannot be a layout event for the kit's measured box.
-   *
-   * **Residual, stated rather than guessed.** Bottom-aligning puts the `Text`'s *line box* bottom
-   * at the anchor, so the **ink** lands ~2–4 vp above it: measured today, with `padding.top` =
-   * `SPACE_M` (16 vp = 54 px), the ink starts at 56–58 px, i.e. about 2 px of leading. If the
-   * intent is ink-bottom-at-the-edge then the container wants the anchor **+ ~3 vp**. That is a
-   * one-screenshot refinement for the user to settle after installing — **there is no device this
-   * round**, so it is recorded rather than baked in.
-   *
-   * ## Tone, and why it is not a chip
-   *
-   * `chromeMuted()` — the page's own secondary tone, the one the page indicator in the top bar
-   * already wears (7.29 / 8.74 / 4.67:1 in light / dark / sepia, all above this project's 4.5:1
-   * floor; sepia's 4.67 is the tightest and is not new here). It is the right role because the
-   * title lands in the **empty band above the first line of live text**, so it needs no opaque
-   * backing. That band used to be described as Reader Kit's reserved 页眉 band (68 vp); what is
-   * *measured* is that the first body line's ink starts at `y 328 px = 97.2 vp`, so the anchor at
-   * `92 vp = 310.5 px` leaves about 18 px of clear page above the text — tighter than the old
-   * centred placement, and still tight enough to be legible without a surface behind it.
-   * `chromeSurface()` + `chromeText()` — the toast chip's pattern — is what a title that *could*
-   * overlap the text would need, and it is deliberately not spent here.
-   * `sheetRowMuted()`/`mutedForeground()` are out of the question: both are derived for a sheet's
-   * `card` row, not for the page.
-   */
-  @Builder
-  private chapterOverlay() {
-    Column() {
-      // The anchor band. Its height is the whole placement mechanism; see this builder's note.
-      Column() {
-        Text(this.chapterTitle)
-          .fontSize(TYPE_CAPTION)
-          .fontColor(this.chromeMuted())
-          .maxLines(1)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          // `Start`, not `Center`: the title moved from the page's centre to the text's left edge.
-          .textAlign(TextAlign.Start)
-      }
-      .width('100%')
-      .height(this.persistentTitleAnchorVp())
-      .justifyContent(FlexAlign.End)
-      .alignItems(HorizontalAlign.Start)
-      // The left inset is the text's own layout origin (`PERSISTENT_TITLE_LEFT`) and the right one
-      // is breathing room so a long name ellipsises inside the page; the two are separate
-      // constants because they are separate reasons.
-      .padding({ left: PERSISTENT_TITLE_LEFT, right: PERSISTENT_TITLE_RIGHT })
-    }
-    .width('100%')
-    .height('100%')
-    .justifyContent(FlexAlign.Start)
-    // Pinned like the two bars: an overlay of the page, never a band of it.
-    .position({ left: 0, top: 0 })
-    // Belt and braces with the sibling order — `Transparent` means this overlay cannot consume a
-    // tap that the zones below it would otherwise get. `Text` itself carries no handler.
-    .hitTestBehavior(HitTestMode.Transparent)
-    .visibility(this.chapterOverlayVisible() ? Visibility.Visible : Visibility.None)
-  }
-
-  /**
-   * Where the persistent chapter name's **line-box bottom** sits, in vp from the page box's top
-   * edge — which is the screen's top edge, because the window is full screen.
-   *
-   * **A derived expression, never a literal, and the derivation is the point.** It is the bottom
-   * edge of the top bar's **own `TOP_BAR_HEIGHT` band** — `topInsetVp + TOP_BAR_HEIGHT` — which is
-   * the measured `92 vp = 310.5 px` the bar's paint used to stop dead at, and which is what
-   * 「左下角」 most literally names: the bottom-left corner of the top navigation bar.
-   *
-   * **It is invariant to `TOP_BAR_SHADOW_ROOM` deliberately.** The drawing box grew 56 → 80 vp
-   * this round for the shadow, and a title anchored to the *grown* box would have been pushed
-   * 24 vp down — from `310 px` to `392 px` — and `392 px` is **on top of the first line of body
-   * text** (measured ink `y 328–385 px`). So naming `TOP_BAR_HEIGHT` here rather than
-   * `TOP_BAR_BOX_HEIGHT` is the difference between the title sitting in the clear page above the
-   * text and sitting in the text. Neither number is a literal: both are the named constants, so a
-   * later change to either moves the title with it.
-   *
-   * Reading `this.topInsetVp` is why the reader has a fourth read of that field, and the audit
-   * count that guards it was updated for this one — see `tools/verify-reader-chrome.mjs`. It is a
-   * **bar** metric (the bar's own bottom edge), it is read outside `build()`, and it reaches
-   * neither `resolveViewPort()` nor `toKitSettings()`, so it cannot move the pagination box.
-   */
-  private persistentTitleAnchorVp(): number {
-    return this.topInsetVp + TOP_BAR_HEIGHT;
-  }
-
-  /**
-   * Whether the persistent chapter name is on screen: **exactly when no top bar is.**
-   *
-   * The `!` is the whole mutual-exclusion rule — see `chapterOverlay`. It reads `topBarVisible()`
-   * rather than `barsVisible` on purpose: the failure screen is a state where the top bar is up
-   * without `barsVisible` being true, and a title left up there would be a second chapter-name
-   * surface, which is the one thing this rule forbids. `barsVisible` still has exactly **one**
-   * writer (`toggleBars`); this is a reader of a reader.
-   */
-  private chapterOverlayVisible(): boolean {
-    return !this.topBarVisible();
-  }
+  // --- the persistent chapter name is gone, and the invariant it carried survives (r106) ----
+  //
+  // `chapterOverlay()` (the always-on chapter name), `chapterOverlayVisible()` and
+  // `persistentTitleAnchorVp()` all stood here, and all three are deleted rather than disabled.
+  // The user's decision is 「那就去掉常驻标题。」 and the investigation behind it closed every other
+  // door, so this is the record of *why* it is a deletion instead of a move:
+  //
+  //  - **The page-curl cannot carry an app-drawn sibling.** Reader Kit draws the 仿真 flip with its
+  //    own in-process class `flip_SimulationPageAnim` **inside** the `ReadPageComponent` node, so an
+  //    overlay declared in the page `Stack` is a *later sibling* of that node: it is painted above
+  //    it and is never carried by the curl. There is no app-side surface that can turn with the
+  //    page, so 「贴在纸上、跟着翻页转」 is not expressible here.
+  //  - **There is no content-injection point.** `PageDataInfo.pageHeaderContent` /
+  //    `pageFooterContent` are documented 「预留字段，暂不支持。」, and the kit's whole API surface —
+  //    six read-only parser methods, eight controller methods, thirteen `ReaderSetting` fields —
+  //    has no content parameter and no page-turn callback.
+  //  - **It was never a layering defect.** In a static frame with no flip running, the body's ink
+  //    measures pure `(0, 0, 0)` while the title's ink measures luminance **80–87**, which is
+  //    `chromeMuted()` — the page's own secondary tone, at `READER_MUTED_ALPHA` (70 %) over the
+  //    page — composited to `(78, 78, 77)`. The title was pale *by design*, so no z-order change
+  //    could have made it read as body ink. (This file carries no colour literal, comments
+  //    included, so the tone is named rather than spelled.)
+  //
+  // ## The invariant that mattered, and its new and stronger form
+  //
+  // What the three members together guaranteed was **exactly one chapter name on screen at any
+  // moment**: the top bar's `topBarRow` and this overlay were two surfaces drawing
+  // `this.chapterTitle`, and `!topBarVisible()` kept them apart. With the overlay gone there is
+  // **one** surface — `topBarRow` — so "exactly one name" is no longer a property two predicates
+  // have to agree on: it is a count. `tools/verify-reader-chrome.mjs` asserts it as one:
+  // `Text(this.chapterTitle)` appears **exactly once** in this file, inside `topBarRow`, and none
+  // of these removed symbols may come back. That is stronger than the predicate it replaces, which
+  // could only reason about the two surfaces it knew about.
+  //
+  // Nothing else changed with them: `topInsetVp` keeps its readers (3 now, not 4 — the top bar's
+  // `position` is the only geometry that reads it), the page `Stack`'s children are one fewer
+  // overlay with the same page layer and the same `layoutWeight(1)`, and the chapter name is
+  // still empty whenever the top bar is not drawn, exactly as it was on the failure screen before.
 
   /**
    * The reader's top bar — **floating**, hidden until the middle tap zone reveals it.
@@ -2786,10 +2733,15 @@ export struct ReaderView {
     // Pinned, so the bar is an overlay of the page and never a band of it. See this builder's
     // note: this is the whole of why the measured page box cannot move.
     //
-    // **`top` is the cutout inset, not 0 (r102).** The status bar is hidden but the camera's punch
-    // hole is not a status bar, so the bar has to start below the window's own top avoid area or it
-    // is drawn under the lens. `topInsetVp` is 0 until the window answers and 0 on a device with no
-    // top avoid area — which is the same geometry as before this change. See `resolveAvoidInsets`.
+    // **`top` is the window's top avoid band, not 0 (r102), and since r106 that band is the
+    // status bar's.** The camera's punch hole is not a status bar and does not go away when the
+    // status bar does, so the bar has to start below the window's own top avoid area or it is drawn
+    // under the lens; and now that the status bar comes up **with** these bars, the bar also has to
+    // clear the taller of the two bands or its own top edge would sit 3 vp inside the status bar.
+    // `resolveAvoidInsets` takes the maximum of the cutout and the status bar's band, read
+    // *ignoring visibility* so that hiding the status bar does not erase the number.
+    // `topInsetVp` is 0 until the window answers and 0 on a device with no top avoid area — which is
+    // the same geometry as before r102.
     .position({ left: 0, top: this.topInsetVp })
     // --- hidden, since r104, is `opacity` + hit-testing rather than `Visibility` -----------
     //
@@ -2945,9 +2897,12 @@ export struct ReaderView {
     // keeps the capsule still.** The box is `TOP_BAR_BOX_HEIGHT` (80 vp) while the capsule is
     // `TOP_BAR_CAPSULE_HEIGHT` (48), and the extra 24 vp is the shadow's room *below* the
     // capsule. Centring would put half of that increment — 12 vp — above the capsule as well and
-    // move it down by 12 vp, which is the one visible regression this round could introduce: the
-    // capsule's top edge is measured at `136 px` and must stay there. Pinning it
-    // `TOP_BAR_CAPSULE_TOP_GAP` from the box's top leaves every added vp below it.
+    // move it down by 12 vp, which is the one visible regression r104 could introduce: the
+    // capsule's top edge is measured at `136 px` (r104, when the bar's inset was the cutout's
+    // 36 vp) and since r106 the inset is the status bar's 39 vp, so the same measurement reads
+    // `145 px` — 3 vp lower, and for the reason recorded on `TOP_BAR_CAPSULE_TOP_GAP`, not
+    // because of this gap. Pinning it `TOP_BAR_CAPSULE_TOP_GAP` from the box's top leaves every
+    // added vp below it either way.
     .justifyContent(FlexAlign.Start)
     .padding({ top: TOP_BAR_CAPSULE_TOP_GAP })
     // Explicit rather than inherited: this column is what centres a capsule that is now **narrower
@@ -3132,15 +3087,124 @@ export struct ReaderView {
     const apply: () => void = (): void => {
       this.barsVisible = !this.barsVisible;
     };
-    if (!this.animationOn) {
+    if (this.animationOn) {
+      this.getUIContext().animateTo({
+        // Inert beside a spring curve, and documented as such — see `BAR_SLIDE_DURATION_MS`.
+        duration: BAR_SLIDE_DURATION_MS,
+        curve: curves.springMotion(BAR_SLIDE_RESPONSE, BAR_SLIDE_DAMPING),
+      }, apply);
+    } else {
+      // **"Off" means no tween at all, not a zero-length one** — `animateTo` is skipped rather than
+      // handed `duration: 0`. See the note above: `duration: 0` would still open an animation
+      // context and still run a frame of interpolation. This was an early `return` until r106; the
+      // status-bar line below is shared by both paths, so the branch had to fall through instead —
+      // the gate, the skip and the one assignment site are all unchanged.
       apply();
-      return;
     }
-    this.getUIContext().animateTo({
-      // Inert beside a spring curve, and documented as such — see `BAR_SLIDE_DURATION_MS`.
-      duration: BAR_SLIDE_DURATION_MS,
-      curve: curves.springMotion(BAR_SLIDE_RESPONSE, BAR_SLIDE_DAMPING),
-    }, apply);
+    // --- the status bar follows the bars (r106), and this line's *position* is the point -------
+    //
+    // The user: 「我想让信号栏和顶栏底栏同步显隐」. Two things are deliberate about writing it
+    // here rather than from inside the `animateTo` closure:
+    //
+    //  - **It reads `barsVisible` after its single write.** `toggleBars` is the only writer of that
+    //    field, so this is one source of truth read one statement after it settled — not a second
+    //    condition that could disagree with the bars;
+    //  - **A window API inside `animateTo` would not be animated by it.** `animateTo` interpolates
+    //    the *ArkUI* properties of the nodes it wraps; a `window` call is a system-service request
+    //    outside that graph, so putting it in the closure would couple the two in appearance only
+    //    while claiming a synchronisation that does not exist.
+    this.applyReaderStatusBar(this.barsVisible, true);
+  }
+
+  /**
+   * Show or hide the system status bar for as long as the reader is on screen.
+   *
+   * ## Why the reader writes this at all
+   *
+   * `Index.applySystemAppearance` hides the status bar **app-wide**, and that is the baseline the
+   * whole app is laid out against — the shell's content areas begin at the screen's top edge
+   * because of it. The user then asked for the reader's two bars and the status bar to appear and
+   * disappear **together** (「我想让信号栏和顶栏底栏同步显隐」), and that is a reader-scoped behaviour:
+   * with the bars down — the default — the page keeps the whole screen, and with them up the reader
+   * looks like a normal app frame. So it has to be written from the reader.
+   *
+   * ## The two writers, and why they cannot currently fight
+   *
+   * The status bar has exactly **two** writers in this app, and their lifetimes are disjoint:
+   *
+   *  - **`Index.applySystemAppearance`** — app-wide, at start-up and on every theme pick. The
+   *    theme picker lives on the **shell's** 设置 page; the reader *replaces* the shell rather than
+   *    layering over it (`Index.build`'s `openBook` branch draws `readerScreen` instead of the
+   *    `Navigation`/`shellTabs`), and the reader's own settings sheet carries **only 字号**. So the
+   *    app-wide writer cannot run while this component is mounted;
+   *  - **this method** — while the reader is mounted: `toggleBars` (the middle tap zone) and
+   *    `aboutToDisappear` (the single unmount path).
+   *
+   * **The residual risk, recorded rather than hidden.** If a theme control is ever added to the
+   * reader's settings sheet, picking a theme there would run `Index.chooseTheme` →
+   * `applySystemAppearance` → `setSpecificSystemBarEnabled('status', false)` *while* `barsVisible`
+   * is true, and the bar would snap hidden under a reader chrome that is still up. The fix at that
+   * point is for the reader to re-assert its own value after the host's write — **not** a third
+   * writer, and not a second boolean.
+   *
+   * ## `enableAnimation`: the OS's own curve, passed on purpose
+   *
+   * `setSpecificSystemBarEnabled(name, enable, enableAnimation?)` gained its third parameter in
+   * **API 12** (`@ohos.window.d.ts:4643`, `[since 12]`), far below this app's
+   * `compatibleSdkVersion` 24, so it needs no guard — unlike the `@since 22` / SessionManager read
+   * in `resolveAvoidInsets`. `toggleBars` passes **`true`** and accepts whatever curve the platform
+   * uses. It cannot be this app's spring: `curves.springMotion(BAR_SLIDE_RESPONSE,
+   * BAR_SLIDE_DAMPING)` is an ArkUI curve for ArkUI properties, and there is no way to hand it to a
+   * system-bar transition. A status bar that **snapped** beside a springing capsule would look
+   * worse than one that eases on a different curve, so the mismatch is stated and accepted rather
+   * than papered over with `false`.
+   *
+   * ## Log-and-continue, and the return value
+   *
+   * `aboutToDisappear` passes **no** third argument — the app-wide baseline is written the same way
+   * in `Index` — and both failures are `hilog.warn`s, matching that call. The SDK is explicit that
+   * success proves nothing about the result: 「The return value does not indicate that the status bar
+   * … [is] shown or hidden」, and the call is a documented silent no-op in split-screen and
+   * floating-window mode. So this is a log, not a retry, and not an error the reader has to dismiss.
+   */
+  private applyReaderStatusBar(visible: boolean, enableAnimation?: boolean): void {
+    try {
+      const context: common.UIAbilityContext = this.getUIContext()
+        .getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(context)
+        .then((win: window.Window): void => {
+          // The third argument is passed only when the caller asked for animation, so the unmount
+          // path issues the same two-argument call `Index.applySystemAppearance` does.
+          const applied: Promise<void> = enableAnimation === undefined
+            ? win.setSpecificSystemBarEnabled('status', visible)
+            : win.setSpecificSystemBarEnabled('status', visible, enableAnimation);
+          applied
+            .then((): void => {
+              hilog.info(
+                DOMAIN,
+                TAG,
+                'status bar %{public}s',
+                visible ? 'shown with the bars' : 'hidden (baseline)',
+              );
+            })
+            .catch((err: Object): void => {
+              hilog.warn(
+                DOMAIN,
+                TAG,
+                'status bar not %{public}s: %{public}s',
+                visible ? 'shown' : 'hidden',
+                String(err),
+              );
+            });
+        })
+        .catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'status bar window unavailable: %{public}s', String(err));
+        });
+    } catch (err) {
+      // No UI context yet, or no host window: the app-wide baseline still holds and the reader is
+      // fully usable, so this is a log like every other window call in the app.
+      hilog.warn(DOMAIN, TAG, 'status bar not set: %{public}s', String(err));
+    }
   }
 
   // --- the progress row is gone ---------------------------------------------
@@ -3239,10 +3303,11 @@ export struct ReaderView {
    * It is **not** the whole page, because `Tabs` is a swipeable container: at full height its
    * content region would take the reader's page-turn swipes away from the kit. The cost is stated
    * rather than hidden: **while the bars are shown**, a tap inside the box belongs to the bar and
-   * does not turn a page. While they are hidden the bar is not hit-testable, which is not
-   * hit-testable, so the band behaves as if the bar were not there — and hidden is the default.
+   * does not turn a page. While they are hidden the whole subtree is out of hit testing
+   * (`HitTestMode.BLOCK_DESCENDANTS` since r104), so the band behaves as if the bar were not there
+   * — and hidden is the default.
    * Growing the box from 96 to 120 vp widened that band by 24 vp; the gesture inset widens it by
-   * the inset again (27.9 vp on the reference device, so 120 → 148 vp). Both increments cost
+   * the inset again (28 vp on the reference device, so 120 → 148 vp). Both increments cost
    * nothing while the bars are down.
    *
    * ## Why the bar's width is stated rather than left to HDS
@@ -3270,7 +3335,7 @@ export struct ReaderView {
       barSideMargin: `${FLOATING_BAR_SIDE_MARGIN}vp`,
       // The same unit-bearing rule, and the value is the design's margin **plus the live gesture
       // bar**: `barBottomMargin` is the capsule's distance from the box's bottom edge, which is
-      // the screen's bottom edge, so clearing a 27.9 vp navigation bar means adding 27.9 vp here.
+      // the screen's bottom edge, so clearing a 28 vp navigation bar means adding 28 vp here.
       barBottomMargin: `${this.bottomBarMarginVp()}vp`,
       // One width for both of the reader's bars. All three tiers are set so the width does not
       // move with the breakpoint — see this builder's note and `FLOATING_BAR_WIDTH`.
@@ -4015,22 +4080,24 @@ export struct ReaderView {
    * ## The order of the children is the interaction model
    *
    *   1. the page layer — the kit's panel, and the pagination spinner over it;
-   *   2. the transient chip, an overlay since this round so a message can no longer resize the
+   *   2. the transient chip, an overlay since r100 so a message can no longer resize the
    *      page. (It is unreachable today — `flash()` has no caller — and this keeps it harmless
    *      if it ever gets one.);
-   *   3. the **persistent chapter name** (`chapterOverlay`), an always-on overlay of its own so
-   *      the chapter is still named while the bars are down. It is here, before the zones, and
-   *      `HitTestMode.Transparent`, so a tap on it is a tap on the zone underneath; and before
-   *      both bars, so a revealed bar draws over it. The rule that exactly one chapter name is
-   *      on screen at any moment lives in `chapterOverlayVisible`, not in this order;
-   *   4. the three tap zones, `HitTestMode.Transparent`, so the kit keeps its drags;
-   *   5. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
+   *   3. the three tap zones, `HitTestMode.Transparent`, so the kit keeps its drags;
+   *   4. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
    *      and is not also a page turn. Material does not affect hit testing — it paints
    *      background, border, blur and shadow and nothing else — so this ordering is the entire
    *      mechanism that gives a bar its own taps. A hidden bar is not hit-testable — `opacity` 0
    *      with `HitTestMode.BLOCK_DESCENDANTS` since r104, which is the same statement
    *      `Visibility.None` used to make for it — so "the bars are down" and "the zones own the
    *      page" are one statement rather than two that have to agree.
+   *
+   * A third overlay stood between 2 and 3 until r106 — the always-on chapter name — and it is gone
+   * (its own note carries the user's decision and the whole investigation). The list is one shorter
+   * and the **page layer is untouched**: the overlay was a `position`-anchored sibling, so removing
+   * it cannot move the measured box, which is the property the r100/r102 checks below exist to
+   * catch. What is left of that overlay's rule is a count: the chapter name is drawn by `topBarRow`
+   * and by nothing else.
    *
    * The failure screen is the one alternative inside that structure: the kit is replaced by the
    * message, the zones and the bottom bar are absent (there is no page to turn and no entries
@@ -4147,14 +4214,14 @@ export struct ReaderView {
           .hitTestBehavior(HitTestMode.Transparent)
         }
 
-        // --- the persistent chapter name, the three zones, then the bars over them --
+        // --- the three zones, then the bars over them ------------------------------
         //
-        // The order is the mechanism twice over: the persistent title is **before** `tapZones()`
-        // so a tap on it belongs to the zone underneath, and before both bars so a revealed bar
-        // draws over it. `chapterOverlayVisible()` already makes the title and the top bar
-        // mutually exclusive, so the second of those is never *seen* as a conflict — but the
-        // order is still the thing that makes it impossible for a bar to be drawn under it.
-        this.chapterOverlay()
+        // The zones are declared before both bars so a tap inside a bar's own bounds belongs to
+        // the bar: a later sibling is hit-tested first. Until r106 an always-on chapter-name
+        // overlay sat above these lines as well — before the zones so a tap on it reached the zone
+        // underneath, and before the bars so a revealed bar drew over it — and it is deleted, which
+        // is why the two comments that used to explain it are gone with it rather than left
+        // pointing at nothing.
         if (this.errorText.length === 0) {
           this.tapZones()
           this.bottomBar()

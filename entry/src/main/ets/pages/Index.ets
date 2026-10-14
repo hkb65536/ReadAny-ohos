@@ -248,8 +248,27 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * `onSheetOpenSettled` already uses) so a dismissal that is not of the live sheet cannot take
  * the frost off one that is. `onDisappear`'s clear stays unconditional, so the gate can still
  * never outlive the sheet. `sheetOpen = false` is still written exactly once.
+ *
+ * **r106 is two user decisions, and only one of them touches this file.**
+ *
+ *  - **The status bar now shows and hides with the reader's two bars** (「我想让信号栏和顶栏底栏
+ *    同步显隐」). The app-wide baseline written below is **unchanged** — still `('status', false)`,
+ *    still one call site, still asserted as exactly one in this file — and the reader writes the
+ *    same bar while it is mounted (from `toggleBars` and from its single unmount path). The two
+ *    writers' lifetimes are disjoint because the theme picker that re-runs
+ *    `applySystemAppearance` lives on **this** file's 设置 tab while the reader replaces the shell;
+ *    `ReaderView.applyReaderStatusBar` records the arrangement and the residual risk.
+ *  - **The status bar's band is corrected here from 57.8 vp to 131 px = 38.8 vp**, which is what
+ *    the device's own window manager dump reports (`SCBStatusBar22 … [ 0 0 2848 131 ]`). The old
+ *    number also fails to reproduce the reader sheets' measured opening edge (`1488 px`: a 131 px
+ *    base inset predicts `1489.5 px`, a 195 px one `1521.5 px`). The reader's top bar therefore
+ *    clears **39 vp** rather than the cutout's 36, and the reader's own `resolveAvoidInsets` reads
+ *    that band *ignoring visibility*.
+ *  - The reader's **persistent chapter name is deleted** (「那就去掉常驻标题。」). That is
+ *    `ReaderView`'s business, but it is recorded here because this file used to be the only other
+ *    place the chapter name was discussed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-13 r104 (bar-shadow-and-animation)';
+export const BUILD_STAMP: string = 'build 2026-10-13 r106 (status-bar-sync-no-persistent-title)';
 
 /**
  * A byte count as something a person can read.
@@ -828,9 +847,12 @@ struct Index {
    *    it cannot be pushed around by the inset change either.
    *  - **`SHEET_MIN_HEIGHT` keeps its value and changes its base.** `'50%'` is half the sheet's
    *    own maximum, which is the window less the sheet's top safe-area inset, and full screen
-   *    removes that inset — so the four reader sheets open about 29 vp higher (half of 57.8).
-   *    Deliberate: a percentage keeps "half of what the sheet has" true on rotation and on other
-   *    devices, where a vp literal would not. `SHEET_MIN_HEIGHT`'s own note records it.
+   *    removes that inset — so the four reader sheets open about **19 vp** higher (half of the
+   *    status bar's 38.8 vp band). An earlier revision of this sentence said 29 vp, from the
+   *    57.8 vp figure corrected at the call site below; the *measured* top edge of an open sheet is
+   *    `1488 px`, which a 131 px base inset reproduces (`1489.5 px`) and a 195 px one does not
+   *    (`1521.5 px`). Deliberate: a percentage keeps "half of what the sheet has" true on rotation
+   *    and on other devices, where a vp literal would not. `SHEET_MIN_HEIGHT`'s own note records it.
    *  - **The three tap zones need no change, and that is checked rather than assumed.** They are
    *    three `layoutWeight(1)` columns of a full-width, full-height row (`height('100%')`), so
    *    their boundaries are the thirds of whatever box the page area has: the x-boundaries are
@@ -873,8 +895,18 @@ struct Index {
         // else). So the only lever that can actually move the text is the window's own layout
         // area: `setWindowLayoutFullScreen(true)` is documented as "the layout does not avoid the
         // status bar … and components may overlap with them" (`@ohos.window.d.ts:4528`), which
-        // hands the page the status bar's 57.8 vp at the top and the gesture bar's 27.9 vp at the
-        // bottom (both measured on this device).
+        // hands the page the status bar's band at the top and the gesture bar's at the bottom.
+        //
+        // **The status bar's band is 131 px = 38.8 vp, and an earlier revision of this comment
+        // said 57.8 vp — that number was wrong and is corrected here.** The device's own window
+        // manager dump prints `SCBStatusBar22 … [ 0 0 2848 131 ]`, i.e. a 131 px band (the rect is
+        // in the display's natural frame), and the gesture bar `SCBGestureNavBar14 … [ 0 1226 2848
+        // 94 ]`, i.e. 94 px = 27.85 vp. The old figure also fails to reproduce a measurement this
+        // project already has: the reader's sheets open with their top edge at exactly `1488 px`,
+        // and a 131 px base inset predicts `2848 - (2848 - 131) / 2 = 1489.5 px`, while 57.8 vp
+        // (195 px) predicts `1521.5 px`. 131 px is also what `ReaderView.resolveAvoidInsets` reads
+        // through the visibility-invariant avoid-area call, and what gives the reader's top bar
+        // its 39 vp inset.
         //
         // **Why app-wide rather than only while reading.** Three reasons, and the second is the
         // decisive one:
