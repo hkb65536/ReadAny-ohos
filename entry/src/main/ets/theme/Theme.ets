@@ -227,8 +227,20 @@ export function surfaceBackground(material: Object | undefined, fallback: Resour
  *
  * The floating bar **overlaps** the content, so anything scrolling underneath it needs
  * this much bottom padding or its final row is hidden under the capsule — reachable by
- * neither scroll nor tap. The spec's own numbers: 56 vp capsule + 16 vp margin = 72,
- * rounded up to 96 for the safe-area inset a device may add below the bar.
+ * neither scroll nor tap.
+ *
+ * **It is the bar's painted box, to the vp**: 56 vp capsule + 8 vp bottom margin
+ * (`FLOATING_BAR_BOTTOM_MARGIN`) + the 32 vp gradient mask above it (`FLOATING_BAR_MASK_HEIGHT`)
+ * = 96. So content padded by it ends exactly where the mask begins, which is why the last row of a
+ * list is not drawn inside the fade. (The design spec's own arithmetic reads 56 + 16 side margin =
+ * 72, "rounded up" for a safe-area inset; both land here, and the mask term is the one that is
+ * load-bearing, because it is the term that moves when the capsule is lifted.)
+ *
+ * **That is also why r107 grew the shell's copy rather than leaving it at 96.** Once the capsule
+ * clears the gesture bar, the mask moves up with it and the box is `96 + the inset` (124 on the
+ * reference device). See `Index.shellBarClearanceVp`; the reader reaches the same number from the
+ * other side, as `BOTTOM_BAR_BOX_HEIGHT + bottomInsetVp`. This constant stays 96: it is the
+ * *bar's* geometry, and the inset is added by whoever knows it.
  *
  * Defined once and imported by every scroll owner. Three copies of "the same" number is
  * how one of them ends up stale.

@@ -39,6 +39,16 @@ export struct AnnotationsPage {
    * strips showed.
    */
   @Prop palette: ThemePalette;
+  /**
+   * The gesture navigation bar's height in vp, handed down by the shell.
+   *
+   * The floating tab bar is drawn over this list, and since r107 it clears the gesture bar by that
+   * inset — with its gradient mask moving up by the same amount. The list therefore reserves
+   * `FLOATING_BAR_CLEARANCE` plus this, or its last row would sit inside the fade. Read once in
+   * `Index.resolveShellInsets`; this page only composes the number it is given. 0 is the r106
+   * geometry, hence the default.
+   */
+  @Prop bottomInsetVp: number = 0;
   /** Which annotation types to show. */
   @Link showBookmarks: boolean;
   @Link showHighlights: boolean;
@@ -358,7 +368,11 @@ export struct AnnotationsPage {
         .layoutWeight(1)
         // Clears the floating bottom tab bar, which overlaps the content. At 16 the
         // last annotation sat under the capsule and could not be tapped.
-        .padding({ left: 16, right: 16, bottom: FLOATING_BAR_CLEARANCE })
+        //
+        // Since r107 the capsule is lifted by the gesture inset and the gradient mask above it goes
+        // with it, so the clearance grows by the same amount — otherwise the last row would be drawn
+        // inside the fade.
+        .padding({ left: 16, right: 16, bottom: FLOATING_BAR_CLEARANCE + this.bottomInsetVp })
         .scrollBar(BarState.Auto)
         // Gated like every other scroll owner: off means the list stops at its last row
         // instead of stretching and springing back.

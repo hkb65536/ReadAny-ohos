@@ -267,8 +267,27 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  *  - The reader's **persistent chapter name is deleted** (「那就去掉常驻标题。」). That is
  *    `ReaderView`'s business, but it is recorded here because this file used to be the only other
  *    place the chapter name was discussed.
+ *
+ * **r107 is three changes to this shell, and one correction that reaches into `ReaderView`.**
+ *
+ *  - **The status bar is `true` here now** (「信号栏在主界面应该是常显的，现在隐藏了」). The user said
+ *    the reading screen stays as it is (「阅读界面暂时就这样」), so the reader's own toggle is
+ *    unchanged and only its **unmount** value moved with the baseline. The two writers still share
+ *    one value, and `verify-reader-chrome.mjs` now asserts that across both files.
+ *  - **The shell measures the two system insets once** (`resolveShellInsets`) and lays itself out
+ *    against them: the floating tab bar clears the gesture bar by `FLOATING_BAR_BOTTOM_MARGIN` plus
+ *    that inset (「主界面的底栏也要避开导航条」), and the page titles sit below the top band
+ *    (「标题要下移，现在是和挖孔在同一个高度」).
+ *  - **The content under the titles compresses rather than being pushed off the screen**
+ *    (「标题下移那下面的内容也要跟着压缩，先这样改」): the sections are `Column`s with a weighted
+ *    scroll below an unweighted title, so the title's inset comes straight out of the scroll box.
+ *    The two tab scroll owners that sit *under* the floating bar also grow their bottom padding by
+ *    the same inset, because the bar's gradient mask moved up with the capsule.
+ *  - **The correction:** `ReaderView.aboutToDisappear` restores the app-wide value, so it had to
+ *    move from `false` to `true` with the baseline above. Left at `false` it would hide the shell's
+ *    status bar the moment a book was closed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-13 r106 (status-bar-sync-no-persistent-title)';
+export const BUILD_STAMP: string = 'build 2026-10-14 r107 (shell-status-bar-and-insets)';
 
 /**
  * A byte count as something a person can read.
@@ -713,6 +732,42 @@ struct Index {
     ? SurfaceStyle.IMMERSIVE
     : SurfaceStyle.OPAQUE;
 
+  // --- the two system insets the shell lays itself out against (r107) -------
+  /**
+   * The top band the shell must clear — the status bar's, or the punch hole's, whichever is
+   * taller — in vp, measured once from the window (`resolveShellInsets`).
+   *
+   * **Why the shell needs one at all.** `setWindowLayoutFullScreen(true)` is what gives the
+   * reader its full-screen page box, and the price of it is that the layout no longer avoids the
+   * status bar: the shell's content begins at the screen's top edge. That was invisible while the
+   * status bar was hidden app-wide; since r107 it is **shown** (「信号栏在主界面应该是常显的」),
+   * so a title at the top edge sits under the clock and the punch hole — the defect the user
+   * reported as 「标题要下移，现在是和挖孔在同一个高度」. This is the documented remedy for this
+   * layout rather than an invention: the immersive guide's own full-screen example reads the avoid
+   * area and pads by `px2vp(topRectHeight)`, because without it 「UI元素就会发生重叠」.
+   *
+   * **Why `@State`.** The read resolves on a promise, i.e. after the first frame. A plain field
+   * would keep whatever value the first `build` captured and neither the titles nor the tab bar
+   * would ever move. (`ReaderView.topInsetVp` is `@State` for the same reason.)
+   *
+   * **One read, three readers**, all through named values rather than through literals:
+   * `pageTitle` and `detailHeader` offset by it, `shellBarBottomMarginVp` adds it to the floating
+   * bar's design margin, and the two scroll owners that sit *under* that bar (`ShelfPage`,
+   * `AnnotationsPage`) are handed it so they can add it to `FLOATING_BAR_CLEARANCE` — the capsule's
+   * 32 vp gradient mask moves up with the capsule, so their bottom padding has to move with it too.
+   * Nothing else in the shell reads it — in particular no page-sized container, and no container
+   * whose size something else measures.
+   */
+  @State private shellTopInsetVp: number = 0;
+  /**
+   * The gesture navigation bar's height in vp, from the same measurement.
+   *
+   * The tab bar has to clear it (「底栏也要避开导航条」), which it does by adding this to
+   * `FLOATING_BAR_BOTTOM_MARGIN` — the same construction the reader's bottom bar already uses, and
+   * the same number: 94 px / 3.375 = 27.85 vp, rounded up to 28.
+   */
+  @State private shellBottomInsetVp: number = 0;
+
   // --- network method probe state ------------------------------------------
   @State private probeUrl: string = DEFAULT_PROBE_URL;
   @State private probeLines: string[] = [];
@@ -751,6 +806,9 @@ struct Index {
   aboutToAppear(): void {
     this.bootstrap();
     this.restoreTheme();
+    // Issued alongside the other two, not after them: the insets decide where the first frame's
+    // titles and tab bar go, so the sooner the window answers the shorter the correction is.
+    this.resolveShellInsets();
   }
 
   /**
@@ -882,7 +940,7 @@ struct Index {
     window.getLastWindow(context)
       .then((win: window.Window): void => {
         win.setWindowBackgroundColor(colour);
-        // --- full screen, and the status bar hidden with it (r101) -----------------
+        // --- full screen, and the status bar **shown** with it (r107; hidden until r106) -----
         //
         // **Why here.** This is the one place the app already holds the main window
         // (`window.getLastWindow`), so it costs no second lookup, and a window-level setting
@@ -897,16 +955,27 @@ struct Index {
         // status bar … and components may overlap with them" (`@ohos.window.d.ts:4528`), which
         // hands the page the status bar's band at the top and the gesture bar's at the bottom.
         //
-        // **The status bar's band is 131 px = 38.8 vp, and an earlier revision of this comment
-        // said 57.8 vp — that number was wrong and is corrected here.** The device's own window
-        // manager dump prints `SCBStatusBar22 … [ 0 0 2848 131 ]`, i.e. a 131 px band (the rect is
-        // in the display's natural frame), and the gesture bar `SCBGestureNavBar14 … [ 0 1226 2848
-        // 94 ]`, i.e. 94 px = 27.85 vp. The old figure also fails to reproduce a measurement this
-        // project already has: the reader's sheets open with their top edge at exactly `1488 px`,
-        // and a 131 px base inset predicts `2848 - (2848 - 131) / 2 = 1489.5 px`, while 57.8 vp
-        // (195 px) predicts `1521.5 px`. 131 px is also what `ReaderView.resolveAvoidInsets` reads
-        // through the visibility-invariant avoid-area call, and what gives the reader's top bar
-        // its 39 vp inset.
+        // **The band the shell now has to clear is the status bar's: 131 px = 38.8 vp, and an
+        // earlier revision of this comment said 57.8 vp — that number was wrong and is corrected
+        // here.** The device's own window manager dump prints `SCBStatusBar22 … [ 0 0 2848 131 ]`,
+        // i.e. a 131 px band (the rect is in the display's natural frame), and the gesture bar
+        // `SCBGestureNavBar14 … [ 0 1226 2848 94 ]`, i.e. 94 px = 27.85 vp. The old figure also
+        // fails to reproduce a measurement this project already has: the reader's sheets open with
+        // their top edge at exactly `1488 px`, and a 131 px base inset predicts
+        // `2848 - (2848 - 131) / 2 = 1489.5 px`, while 57.8 vp (195 px) predicts `1521.5 px`.
+        // 131 px is also what `resolveShellInsets` reads through the visibility-invariant
+        // avoid-area call, and what the reader's top bar's 39 vp inset is.
+        //
+        // **The value is `true` since r107, and that is a user decision about the shell.** The
+        // user: 「信号栏在主界面应该是常显的，现在隐藏了」 — the status bar is **always visible on
+        // the shell** (书架 / 书签笔记 / 设置). Before r107 this call hid it app-wide and the shell
+        // simply lived without it. The reader keeps its own behaviour: `ReaderView.toggleBars`
+        // still writes the status bar so that it appears and disappears **with the reader's two
+        // bars**, and `ReaderView.aboutToDisappear` restores *this* value on the way out. So the
+        // two writers still share one baseline, and r107 is what keeps them in step: the reader's
+        // unmount and this call must name the same value (`true`) or leaving a book would hide the
+        // shell's status bar — see `verify-reader-chrome.mjs`, which asserts that equality across
+        // the two files rather than trusting it twice.
         //
         // **Why app-wide rather than only while reading.** Three reasons, and the second is the
         // decisive one:
@@ -920,20 +989,21 @@ struct Index {
         //     one — a `setPageConfig` re-pagination in front of a reader who has already started
         //     reading, which is the exact trap `ReaderView`'s two bars are built to avoid. Asserted
         //     at start-up, the reader's *first* layout is already the final geometry.
-        //  3. `setSpecificSystemBarEnabled('status', false)` is documented to take effect **only**
-        //     in full-screen mode and to "take effect once the main window enters full-screen or
-        //     maximized mode" (`@ohos.window.d.ts:4637`). So the two have the same lifetime by
-        //     construction: any moment full screen is off is a moment the status bar returns. They
+        //  3. `setSpecificSystemBarEnabled` is documented to take effect **only** in full-screen
+        //     mode and to "take effect once the main window enters full-screen or maximized mode"
+        //     (`@ohos.window.d.ts:4637`). So the two have the same lifetime by construction: any
+        //     moment full screen is off is a moment the status bar's own default returns. They
         //     belong on the same lines.
         //
-        // **The disclosed consequence.** This is a window setting, so the shell gets it too: the
-        // shelf/书签笔记/设置 content areas also begin at the screen's top edge now, and the
-        // shared `pageTitle` therefore sits `SPACE_S` (8 vp) below it instead of 8 vp below the
-        // status bar. Nothing overlaps — the status bar is hidden — but the three section titles
-        // are one status-bar height higher than they were. Left as it is rather than compensated
-        // with a magic top padding: the honest version of that compensation needs a real
-        // measurement (`getWindowAvoidArea`), which is a separate change. If it reads badly on the
-        // device, that is the fix, not a larger constant.
+        // **The consequence this value has, and where it is paid.** A visible status bar is a
+        // band the page is laid out under: full-screen layout means the shell's content begins at
+        // the screen's top edge, so with the bar visible the three page titles would sit under the
+        // clock and the punch hole — which is what the user saw (`书架` 「和挖孔在同一个高度」).
+        // The shell therefore measures the band once (`resolveShellInsets`) and lays its titles
+        // below it. That is the documented remedy for this layout: the immersive guide's own
+        // full-screen example pads by `px2vp(topRectHeight)` and says the elements must avoid the
+        // band or 「UI元素就会发生重叠」. The reader needs no such padding: its own top bar is
+        // placed from the same measurement, and its page box deliberately keeps `y = 0`.
         //
         // Log-and-continue on both, matching the window colour's own handling: neither is worth an
         // error the user has to dismiss, and the app is fully usable at the default geometry.
@@ -944,8 +1014,8 @@ struct Index {
         // *visibility* is not theme-derived. Also a documented silent no-op in split-screen and
         // floating-window mode (`@ohos.window.d.ts:4638`), which is why this is a log and not a
         // retry.
-        win.setSpecificSystemBarEnabled('status', false).catch((err: Object): void => {
-          hilog.warn(DOMAIN, TAG, 'status bar not hidden: %{public}s', String(err));
+        win.setSpecificSystemBarEnabled('status', true).catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'status bar not shown: %{public}s', String(err));
         });
       })
       .catch((err: Object): void => {
@@ -953,6 +1023,112 @@ struct Index {
         // failure here must not surface as an error the user has to dismiss.
         hilog.warn(DOMAIN, TAG, 'window background not set: %{public}s', String(err));
       });
+  }
+
+  /**
+   * Measure the two system insets the shell lays itself out against, once, from the window.
+   *
+   * ## What it reads, and why each read is the one it is
+   *
+   *  - **`TYPE_CUTOUT`** (`= 1`, `@since 7`) — the punch hole, read as `top + height` because a
+   *    top band is not promised to start at 0. The cutout is **not** part of the layout's safe
+   *    area unless `module.json5` opts in with the `avoid_cutout` metadata, which this app
+   *    deliberately does not set (it moves the whole page, and the reader's page box must stay at
+   *    `y = 0`), so it has to be read explicitly.
+   *  - **`TYPE_SYSTEM`** (`= 0`, `@since 7`) — the status bar's band, through
+   *    `getWindowAvoidAreaIgnoringVisibility` where the device declares
+   *    `SystemCapability.Window.SessionManager`. **The invariant call is the deliberate part.**
+   *    The shell *does* show the status bar, so the visibility-respecting read would give the same
+   *    131 px today — but this read is issued from `aboutToAppear`, beside (and racing)
+   *    `applySystemAppearance`'s request to show that bar, and the number it needs is the band the
+   *    title must clear, not the glyphs currently painted. Reading it the same way the reader does
+   *    also means both files resolve the **same** inset by the same rule instead of by two rules
+   *    that agree on one device. The guarded call is `@since 22` **and** carries a syscap with a
+   *    declared `801 - Capability not supported`, so it gets a `canIUse` guard and the plain read
+   *    (`@since 7`, `SystemCapability.WindowManager.WindowManager.Core`) as its fallback — a
+   *    *capability* test, not a version test: every member used here is `@since 11` or below, far
+   *    under this app's `compatibleSdkVersion` 24.
+   *  - **`TYPE_NAVIGATION_INDICATOR`** (`= 4`, `@since 11`) — the gesture bar, from `bottomRect`.
+   *    Visibility is not in question here (the gesture bar is always present), so this one is the
+   *    plain read; it is the bottom band, so the distance to clear is its height.
+   *
+   * ## The arithmetic, and the one duplicate in it
+   *
+   * The top inset is `ceil(px2vp(max(cutout, status band)))` — the larger of the two, because a
+   * punch hole normally sits *inside* the status-bar band and clearing the taller one clears both
+   * (the official sample does the same `Math.max`). The ceiling is not cosmetic: `px2vp` returns a
+   * fraction (131 / 3.375 = 38.81 vp) and an inset is a **clearance**, so the next whole vp is the
+   * safe direction — and integers are what the log line formats with `%{public}d`.
+   *
+   * `ReaderView.resolveAvoidInsets` states the same rule over the same three reads. That is a
+   * deliberate, disclosed duplicate rather than a shared helper: the reader's copy is
+   * `aboutToDisappear`-adjacent verified code that r107 was not allowed to restructure, and the
+   * two band helpers it names (`topBandPx` / `bottomBandPx`) are one expression each, inlined here.
+   * Both files are asserted to produce the same number by the same rounding rule.
+   *
+   * ## Failure is a log, not an error
+   *
+   * At 0 the shell is exactly r106's geometry — titles a status bar high, tab bar 8 vp from the
+   * bottom — which is usable, so a window that cannot answer must not raise anything the user has
+   * to dismiss. The log line carries both raw px values and both resolved vp values, because these
+   * numbers still have to be read back off a device.
+   */
+  private resolveShellInsets(): void {
+    try {
+      const context: common.UIAbilityContext | undefined = this.context();
+      if (context === undefined) {
+        return;
+      }
+      window.getLastWindow(context)
+        .then((win: window.Window): void => {
+          const cutout: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
+          const gesture: window.AvoidArea =
+            win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+          const hasSessionManager: boolean = canIUse('SystemCapability.Window.SessionManager');
+          let invariant: boolean = false;
+          let system: window.AvoidArea | undefined = undefined;
+          if (hasSessionManager) {
+            try {
+              system = win.getWindowAvoidAreaIgnoringVisibility(window.AvoidAreaType.TYPE_SYSTEM);
+              invariant = true;
+            } catch (err) {
+              hilog.warn(
+                DOMAIN,
+                TAG,
+                'shell avoid area ignoring visibility failed, falling back: %{public}s',
+                String(err),
+              );
+            }
+          }
+          if (!invariant) {
+            system = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+          }
+          const cutoutTopPx: number = Math.max(0, cutout.topRect.top + cutout.topRect.height);
+          const systemTopPx: number =
+            system === undefined ? 0 : Math.max(0, system.topRect.top + system.topRect.height);
+          const gesturePx: number = Math.max(0, gesture.bottomRect.height);
+          this.shellTopInsetVp = Math.ceil(this.getUIContext().px2vp(Math.max(cutoutTopPx, systemTopPx)));
+          this.shellBottomInsetVp = Math.ceil(this.getUIContext().px2vp(gesturePx));
+          hilog.info(
+            DOMAIN,
+            TAG,
+            'shell insets: cutout top %{public}d px, status bar top %{public}d px (%{public}s),'
+              + ' gesture bar %{public}d px -> top %{public}d vp, bottom %{public}d vp',
+            cutoutTopPx,
+            systemTopPx,
+            invariant ? 'ignoring visibility' : 'visibility-respecting fallback',
+            gesturePx,
+            this.shellTopInsetVp,
+            this.shellBottomInsetVp,
+          );
+        })
+        .catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'shell insets unavailable: %{public}s', String(err));
+        });
+    } catch (err) {
+      // No UI context yet: the insets stay 0 and the shell is fully usable.
+      hilog.warn(DOMAIN, TAG, 'shell insets not read: %{public}s', String(err));
+    }
   }
 
   /** Apply a theme and remember it. */
@@ -1989,12 +2165,33 @@ struct Index {
    * comment said a heading was not needed; the user has asked for one, and the two do not
    * collide because the bar is at the bottom of the window and this is at the top.
    *
-   * ## The status-bar inset
+   * ## The status-bar inset (r107)
    *
-   * It is inherited rather than computed. The shell's root `Column` carries
-   * `expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])`, so the
-   * content area already begins below the status bar and this `Row`'s `top: SPACE_S` is added
-   * to that. Putting the title *inside* the expanded area would have put it under the clock.
+   * **It is measured, not inherited — the previous version of this comment said the opposite and
+   * was wrong.** It claimed the shell's content already began below the status bar because the root
+   * `Column` carries `expandSafeArea([SafeAreaType.SYSTEM], …)`. It does not: `expandSafeArea` only
+   * extends a component's own *drawing* area and 「不进行二次布局，不影响子节点」, and the thing
+   * that actually decides where the content starts is `setWindowLayoutFullScreen(true)`, whose
+   * documented meaning is that 「布局不避让状态栏与导航栏，组件可能与状态栏、导航栏重叠」
+   * (`@ohos.window.d.ts:4528`). With the status bar hidden that was invisible; since r107 the bar is
+   * **shown** on the shell (「信号栏在主界面应该是常显的」), and the title at the top edge was
+   * sitting under the clock and the punch hole (「现在是和挖孔在同一个高度」).
+   *
+   * So the title is offset by `shellTopInsetVp` — the measured band — plus the `SPACE_S` it already
+   * had, which stays the visual gap *below* the band rather than inside it.
+   *
+   * ## Why the offset lives on this `Row`, and how the content below compresses
+   *
+   * Because this builder is the one thing all three tabs share, and because the compression the
+   * user asked for (「下面的内容也要跟着压缩」) is a consequence of it rather than a second edit:
+   * every section is a `Column` of `height('100%')` whose first child is this unweighted `Row` and
+   * whose second is a `layoutWeight(1)` `Scroll` / `List` / `Grid`. Growing the `Row` by the inset
+   * shrinks the weighted child by exactly the inset, so the scroll box stays inside the screen and
+   * nothing is clipped — the title moves down and the content keeps its top edge against the title.
+   *
+   * (The alternative — padding each section `Column` instead — produces the same geometry in three
+   * places instead of one. This is also *not* a container whose size anything measures: the shelf's
+   * `onAreaChange` reads the `Grid`'s width below it, and the height here is untouched by it.)
    */
   @Builder
   private pageTitle(title: string) {
@@ -2007,7 +2204,7 @@ struct Index {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
-    .padding({ left: SPACE_M, right: SPACE_M, top: SPACE_S, bottom: SPACE_XS })
+    .padding({ left: SPACE_M, right: SPACE_M, top: this.shellTopInsetVp + SPACE_S, bottom: SPACE_XS })
     .alignItems(VerticalAlign.Center)
   }
 
@@ -2022,6 +2219,9 @@ struct Index {
         loading: this.shelfLoading,
         search: this.shelfSearch,
         sort: this.shelfSort,
+        // The gesture bar's inset, so the grid reserves `FLOATING_BAR_CLEARANCE` plus it at the
+        // bottom — the bar was lifted by exactly this much, and the mask above it with the bar.
+        bottomInsetVp: this.shellBottomInsetVp,
         toFileUri: (relativePath: string): string => toFileUri(relativePath),
         onImport: (): Promise<void> => this.importBooks(),
         onReload: (): Promise<void> => this.reloadShelf(),
@@ -2111,6 +2311,9 @@ struct Index {
         showBookmarks: this.showBookmarks,
         showHighlights: this.showHighlights,
         showNotes: this.showNotes,
+        // The same inset the shelf gets, for the same reason: this list is drawn under the
+        // floating tab bar, which now sits one gesture bar higher than it used to.
+        bottomInsetVp: this.shellBottomInsetVp,
         onReload: (): Promise<void> => this.reloadAnnotations(),
         onDeleteBookmark: (item: AnnotationItem): Promise<void> => this.deleteAnnotation(item),
         onDeleteHighlight: (item: AnnotationItem): Promise<void> => this.deleteAnnotation(item),
@@ -2228,6 +2431,13 @@ struct Index {
    * The button is a circle rather than a bare chevron because it needs a hit area of its
    * own — a lone glyph is hard to tap and gives no visual confirmation that it is
    * tappable. Its diameter is the minimum tap target, not the icon size.
+   *
+   * It carries the same measured top inset `pageTitle` does, and for the same reason: these are
+   * shell pages as well — pushed over the tab shell, laid out from the screen's top edge under
+   * `setWindowLayoutFullScreen(true)` — so with the status bar shown (r107) the back button and
+   * the title would otherwise sit under the clock and the punch hole. The user named 书架 as an
+   * example (「我以书架为例」) rather than as the only page with the problem, and this is one
+   * shared builder for both pushed pages, so the band is cleared once for both.
    */
   @Builder
   private detailHeader(title: string) {
@@ -2266,7 +2476,7 @@ struct Index {
         .fontColor(paletteFor(this.themeMode).foreground)
     }
     .width('100%')
-    .padding({ left: SPACE_M, right: SPACE_M, top: SPACE_S, bottom: SPACE_M })
+    .padding({ left: SPACE_M, right: SPACE_M, top: this.shellTopInsetVp + SPACE_S, bottom: SPACE_M })
     .alignItems(VerticalAlign.Center)
   }
 
@@ -3200,6 +3410,25 @@ struct Index {
   }
 
   /**
+   * The floating tab bar's distance from the bottom of the tab area, in vp: the design's own margin
+   * **plus** the gesture bar's inset.
+   *
+   * `HdsTabsFloatingStyle.barBottomMargin` must be a **unit-bearing string** — HDS parses it with a
+   * unit parser and silently drops a bare number (`ParseProp failed parse property
+   * barBottomMargin`), a trap this project has already hit once — so this returns a number and the
+   * unit is put on it at the one call site below.
+   *
+   * **Why the inset is read rather than written down.** The design margin (8 vp) is a design
+   * constant; the gesture bar is a property of the device and of the user's navigation-mode setting.
+   * 8 + 28 = 36 vp on the reference device, which is exactly what the reader's own bottom bar
+   * computes (`ReaderView.bottomBarMarginVp`) — the shell's tab bar and the reader's bottom bar
+   * clear the same system bar by the same construction.
+   */
+  private shellBarBottomMarginVp(): number {
+    return FLOATING_BAR_BOTTOM_MARGIN + this.shellBottomInsetVp;
+  }
+
+  /**
    * The tab shell.
    *
    * Two branches, chosen by capability rather than by API level:
@@ -3222,6 +3451,14 @@ struct Index {
    * bottom padding of `FLOATING_BAR_CLEARANCE`. Without it the last row of a list sits
    * under the bar and cannot be reached — the same class of defect as the nested
    * `Scroll` fixed in this file, and one that also only shows up under a finger.
+   *
+   * **Since r107 that padding is the clearance plus the gesture inset** — the capsule is lifted and
+   * the gradient mask above it moves with the capsule, so a bare 96 would leave a list's last row
+   * inside the fade. The two tab owners that actually sit under this bar — `ShelfPage` and
+   * `AnnotationsPage` — are handed `shellBottomInsetVp` and compose the value themselves, so each
+   * one still names the shared constant. `syncSection` deliberately keeps the bare constant: it
+   * lives in a pushed `NavDestination`, which covers this bar entirely, so there is no lifted
+   * capsule under it to clear.
    */
   @Builder
   private shellTabs() {
@@ -3249,7 +3486,11 @@ struct Index {
       .animationDuration(this.tabSwitchDuration())
       .barFloatingStyle({
         barSideMargin: `${FLOATING_BAR_SIDE_MARGIN}vp`,
-        barBottomMargin: `${FLOATING_BAR_BOTTOM_MARGIN}vp`,
+        // **Unit-bearing, and composed.** The user asked for the shell's bottom bar to clear the
+        // system navigation bar (「主界面的底栏也要避开导航条」), which on this device is the 28 vp
+        // gesture bar measured by `resolveShellInsets`: 8 + 28 = 36 vp. The unit must travel with
+        // the composed value, not with the constant — HDS drops a bare number in silence.
+        barBottomMargin: `${this.shellBarBottomMarginVp()}vp`,
         gradientMask: {
           maskColor: paletteFor(this.themeMode).background,
           maskHeight: FLOATING_BAR_MASK_HEIGHT,

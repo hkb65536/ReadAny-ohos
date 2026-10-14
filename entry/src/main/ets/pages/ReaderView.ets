@@ -995,7 +995,7 @@ export struct ReaderView {
     } catch (err) {
       // Ignored: nothing is subscribed if initialization failed.
     }
-    // The status bar goes back to the app-wide baseline as the reader unmounts (r106). This is
+    // The status bar goes back to the app-wide baseline as the reader unmounts. This is
     // **unconditional** and it is the *single* unmount path: every exit — the 返回 button, the
     // system back gesture, and the shell's own `closeReader` — removes this component, so all three
     // are covered by one line here instead of three call sites in `Index`. It sits beside
@@ -1003,7 +1003,14 @@ export struct ReaderView {
     // borrowed from the window/kit. Two arguments, no `enableAnimation`: the baseline is written
     // the same way in `Index.applySystemAppearance`, and a status bar that eases *out* over a shell
     // page that never had one would be motion about nothing.
-    this.applyReaderStatusBar(false);
+    //
+    // **`true`, not `false`, since r107 — and that is the whole cross-file correction.** The
+    // baseline this line restores is `Index.applySystemAppearance`'s value, and the user moved that
+    // value to 「常显」 for the shell (「信号栏在主界面应该是常显的，现在隐藏了」). Restoring the *old*
+    // value here would leave the shell's status bar hidden the moment a book was closed — the exact
+    // desync the user would see first, and one no single-file reading could catch. Both files are
+    // asserted to name the same value.
+    this.applyReaderStatusBar(true);
   }
 
   /**
@@ -3121,12 +3128,13 @@ export struct ReaderView {
    *
    * ## Why the reader writes this at all
    *
-   * `Index.applySystemAppearance` hides the status bar **app-wide**, and that is the baseline the
-   * whole app is laid out against — the shell's content areas begin at the screen's top edge
-   * because of it. The user then asked for the reader's two bars and the status bar to appear and
-   * disappear **together** (「我想让信号栏和顶栏底栏同步显隐」), and that is a reader-scoped behaviour:
-   * with the bars down — the default — the page keeps the whole screen, and with them up the reader
-   * looks like a normal app frame. So it has to be written from the reader.
+   * `Index.applySystemAppearance` sets the status bar **app-wide, and since r107 it sets it
+   * visible** — the user asked for the signal bar to be always on over the shell (「信号栏在主界面
+   * 应该是常显的，现在隐藏了」), and that is the baseline this component hands back when it leaves.
+   * The user then asked for the reader's two bars and the status bar to appear and disappear
+   * **together** (「我想让信号栏和顶栏底栏同步显隐」), and that is a reader-scoped behaviour: with
+   * the bars down — the default — the page keeps the whole screen, and with them up the reader looks
+   * like a normal app frame. So it has to be written from the reader.
    *
    * ## The two writers, and why they cannot currently fight
    *
@@ -3140,12 +3148,27 @@ export struct ReaderView {
    *  - **this method** — while the reader is mounted: `toggleBars` (the middle tap zone) and
    *    `aboutToDisappear` (the single unmount path).
    *
+   * **What r107 changed is the value they agree on, not the arrangement.** The baseline is now
+   * `true`, so the unmount path asks for `true` as well; if it still asked for `false`, closing a
+   * book would hide the status bar on the shell that the user had just asked to keep it. The two
+   * writers are therefore still one app-wide answer, and `verify-reader-chrome.mjs` asserts the two
+   * files name the same value rather than trusting that they do.
+   *
+   * **The inherited state on mount, disclosed rather than hidden.** This component writes the bar
+   * only when the bars are toggled and when it unmounts, so a reader that mounts with the shell's
+   * baseline visible shows a visible status bar until the first toggle puts it in step with
+   * `barsVisible`. That is the pre-r106 look, it does not touch the page box (the inset is read
+   * visibility-invariantly, so nothing re-paginates), and r107 left it alone deliberately: the round
+   * was authorised to change exactly one value in this file — the unmount's. A mount-time write
+   * would be the way to restore "hidden while the bars are down from the first frame", and it is
+   * recorded here as the next change to make if the user wants it.
+   *
    * **The residual risk, recorded rather than hidden.** If a theme control is ever added to the
    * reader's settings sheet, picking a theme there would run `Index.chooseTheme` →
-   * `applySystemAppearance` → `setSpecificSystemBarEnabled('status', false)` *while* `barsVisible`
-   * is true, and the bar would snap hidden under a reader chrome that is still up. The fix at that
-   * point is for the reader to re-assert its own value after the host's write — **not** a third
-   * writer, and not a second boolean.
+   * `applySystemAppearance` → `setSpecificSystemBarEnabled('status', true)` *while* `barsVisible`
+   * is true, which is now the same answer the bars want and would be invisible — but the day that
+   * write becomes conditional again, the fix is for the reader to re-assert its own value after the
+   * host's write — **not** a third writer, and not a second boolean.
    *
    * ## `enableAnimation`: the OS's own curve, passed on purpose
    *
@@ -3162,10 +3185,13 @@ export struct ReaderView {
    * ## Log-and-continue, and the return value
    *
    * `aboutToDisappear` passes **no** third argument — the app-wide baseline is written the same way
-   * in `Index` — and both failures are `hilog.warn`s, matching that call. The SDK is explicit that
-   * success proves nothing about the result: 「The return value does not indicate that the status bar
-   * … [is] shown or hidden」, and the call is a documented silent no-op in split-screen and
-   * floating-window mode. So this is a log, not a retry, and not an error the reader has to dismiss.
+   * in `Index` — and both failures are `hilog.warn`s, matching that call. The two argument shapes
+   * are also what tells the two callers apart in the log (`baseline` is the unmount, `with the bars`
+   * is the toggle; since r107 both can be asking for `true`, so the value alone no longer says who
+   * asked). The SDK is explicit that success proves nothing about the result: 「The return value does
+   * not indicate that the status bar … [is] shown or hidden」, and the call is a documented silent
+   * no-op in split-screen and floating-window mode. So this is a log, not a retry, and not an error
+   * the reader has to dismiss.
    */
   private applyReaderStatusBar(visible: boolean, enableAnimation?: boolean): void {
     try {
@@ -3180,11 +3206,14 @@ export struct ReaderView {
             : win.setSpecificSystemBarEnabled('status', visible, enableAnimation);
           applied
             .then((): void => {
+              // The path is named because the value cannot name it any more: both the unmount
+              // (the app-wide baseline) and a bars toggle can be asking for a visible bar.
               hilog.info(
                 DOMAIN,
                 TAG,
-                'status bar %{public}s',
-                visible ? 'shown with the bars' : 'hidden (baseline)',
+                'status bar %{public}s (%{public}s)',
+                visible ? 'shown' : 'hidden',
+                enableAnimation === undefined ? 'app-wide baseline' : 'with the bars',
               );
             })
             .catch((err: Object): void => {

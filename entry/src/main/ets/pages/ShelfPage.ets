@@ -98,6 +98,18 @@ export struct ShelfPage {
    * strips showed.
    */
   @Prop palette: ThemePalette;
+  /**
+   * The gesture navigation bar's height in vp, handed down by the shell.
+   *
+   * The floating tab bar floats **over** this grid, and since r107 it clears the gesture bar by
+   * adding this inset to `FLOATING_BAR_BOTTOM_MARGIN`. The bar's gradient mask moves up with it, so
+   * the grid's own bottom padding has to grow by the same amount or the last row of a full shelf
+   * would be drawn inside the fade. The shell is the only place that reads the window
+   * (`Index.resolveShellInsets`); this page composes the number it is given with the design
+   * clearance rather than looking anything up. 0 is the r106 geometry, which is why it is the
+   * default.
+   */
+  @Prop bottomInsetVp: number = 0;
   /** Search text, applied to title and author by the repository query. */
   @Link search: string;
   @Link sort: BookSort;
@@ -868,7 +880,16 @@ export struct ShelfPage {
         // could not be tapped. The horizontal half is `SHELF_GRID_PADDING`, which the
         // action menu's width is derived from (`cardWidth`), so it is named rather than
         // written twice.
-        .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, bottom: FLOATING_BAR_CLEARANCE })
+        //
+        // Since r107 the vertical half is the clearance **plus the gesture inset**: the capsule was
+        // lifted to clear the navigation bar, and the gradient mask above it was lifted with it, so
+        // a bare 96 would leave the last row inside the fade. Only the bottom term changed — the
+        // horizontal padding is still the one `cardWidth` measures against.
+        .padding({
+          left: SHELF_GRID_PADDING,
+          right: SHELF_GRID_PADDING,
+          bottom: FLOATING_BAR_CLEARANCE + this.bottomInsetVp,
+        })
         .scrollBar(BarState.Auto)
         // Gated like the other scroll owners, so switching animation off also stops the
         // shelf stretching past its last row and springing back.
