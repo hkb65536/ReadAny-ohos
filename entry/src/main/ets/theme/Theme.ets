@@ -748,9 +748,10 @@ export function materialOption(): Object | undefined {
  *     reader would come back with a white or black bar. The app keeps the surface it has
  *     verified — the opaque page tone — instead. Same refusal, same reasoning as the menu's.
  *
- * `ULTRA_THIN` rather than the menu's `THICK`: this is a bar that floats at the top of a page,
- * which is the position the design spec prescribes the thinnest layer for.
- * `immersiveTopBarMaterialOption` carries the citation.
+ * `THIN`, **not** the `ULTRA_THIN` the design spec prescribes for 顶部悬浮: matching the bottom bar
+ * is a **user-directed departure** (「以底栏为准」) and `immersiveTopBarMaterialOption` carries the
+ * whole of the reasoning, including why `THIN` is what the bottom bar's HDS policy actually
+ * resolves to and what the change costs.
  *
  * **Where the caller may put it.** The universal `systemMaterial` attribute is out of scope on
  * anything but a `Navigation`/`NavDestination` title bar or a horizontal `Tabs` bottom `TabBar`

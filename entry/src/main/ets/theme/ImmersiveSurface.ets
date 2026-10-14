@@ -67,13 +67,44 @@ export function immersiveMaterialOption(): Object {
 }
 
 /**
- * The material for a bar that **floats at the top** of a page: `ULTRA_THIN`.
+ * The material for a bar that **floats at the top** of a page: `THIN`.
  *
- * The style is the design specification's own choice for this position, not a preference:
+ * ## This is a deliberate departure from the design specification, and it is user-directed
+ *
+ * The 沉浸光感 design spec's own prescription for a component 悬浮 at the top is `ULTRA_THIN`:
  * 「当组件在顶部悬浮时，推荐使用 ULTRA_THIN 枚举参数，并结合渐变模糊效果延展顶部内容展示空间」
- * (沉浸光感 · 场景规范). `ULTRA_THIN` is the thinnest layer the enum offers (「材质层超薄，具有很强
- * 的透明效果」), and the adaptation guide's summary for navigation-class components is the same
- * direction — 「导航类组件通常使用较薄的材质样式（ULTRA_THIN或THIN）」.
+ * (沉浸光感 · 场景规范). The user asked for the top bar to match the bottom one instead —
+ * **「以底栏为准」** — so this file deliberately does not follow that line, and the departure is
+ * recorded here rather than made silently.
+ *
+ * ## Why `THIN` is what "the bottom bar's material" actually is
+ *
+ * The bottom bar does **not** use `ImmersiveStyle` at all: it sets
+ * `systemMaterialEffect: { materialType: hdsMaterial.MaterialType.IMMERSIVE (101),
+ * materialLevel: hdsMaterial.MaterialLevel.ADAPTIVE (10) }`, which are HDS **policy** enums, and
+ * the FAQ states outright that 「hdsMaterial：不提供与 uiMaterial.ImmersiveStyle 对等的材质厚薄程度样式
+ * 配置」. That policy resolves to **`THIN`**, named by two official sources: 组件适配沉浸光感 · 底部页签
+ * (「沉浸式系统材质样式默认取值为 THIN」) and 设计规范 · 场景规范 (「当组件在底部悬浮时，推荐使用 THIN
+ * 枚举参数」). So `THIN` is the bottom bar's thickness by name, and `ULTRA_THIN` was a different
+ * one. `@ohos.arkui.uiMaterial.d.ts:174` declares the order
+ * `ULTRA_THIN=0, THIN=1, REGULAR=2, THICK=3, ULTRA_THICK=4`, so this is one enum member.
+ *
+ * ## Two consequences that belong on the record
+ *
+ *  - **The paired companion changes with it.** `ULTRA_THIN`'s spec companion is 渐变模糊
+ *    (deliberately not implemented here — a material's `materialFilter` already contains the
+ *    background blur and stacking another is the repeated work the power guide forbids), while
+ *    `THIN`'s is **渐变颜色蒙层**, which a `Navigation` cannot carry: it offers no mask parameter,
+ *    and the gradient mask the bottom bar has comes from `HdsTabs`' `barFloatingStyle`. So the
+ *    companion is unavailable rather than skipped, and that is the honest cost of matching the
+ *    bottom bar.
+ *  - **On flat paper the two are already indistinguishable, so this change is invisible on a
+ *    blank page.** Measured: page `241,242,237`, top capsule `242,243,238`, bottom capsule
+ *    `242,243,238` — the two capsules are byte-identical over flat background today. What the
+ *    enum changes is how much of what is **behind** the surface shows through, so it is only
+ *    visible where text sits under the bar. `ImmersiveStyle` is also documented as effective
+ *    **only on high/mid-compute devices**; on a low-compute device the material paints a
+ *    background colour instead and neither thickness is observable.
  *
  * `materialColor` is deliberately **not** set here. On a thin layer the tint is what the filter
  * works with, and the reader's page can be any of three theme tones; leaving it unset lets the
@@ -86,7 +117,7 @@ export function immersiveMaterialOption(): Object {
  */
 export function immersiveTopBarMaterialOption(): Object {
   return new uiMaterial.ImmersiveMaterial({
-    style: uiMaterial.ImmersiveStyle.ULTRA_THIN,
+    style: uiMaterial.ImmersiveStyle.THIN,
   });
 }
 

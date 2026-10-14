@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { display, SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { curves, display, SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { bookParser, ReadPageComponent, readerCore } from '@kit.ReaderKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -87,6 +87,12 @@ const PAGE_INDICATOR_WIDTH: number = 64;
  * below. Nothing is derived from it — the bar is an overlay of the page `Stack` and holds no
  * content of its own (`topBar`) — so the two facts agreeing is a convenience rather than a
  * dependency.
+ *
+ * **It is the bar's own content height, not the box it is drawn in.** Since r104 those are two
+ * numbers: this one is what places the capsule (`TOP_BAR_CAPSULE_TOP_GAP`) and
+ * `TOP_BAR_BOX_HEIGHT` is what the `Navigation` and its title bar are asked for. Keeping them
+ * apart is exactly what lets the box grow for the shadow without the capsule moving — centring
+ * the capsule in the grown box instead would move it down by half the increment.
  */
 const TOP_BAR_HEIGHT: number = 56;
 
@@ -96,8 +102,8 @@ const TOP_BAR_HEIGHT: number = 56;
  * The bar stays `TOP_BAR_HEIGHT` tall — it is a `Navigation`, and that is the title bar's own
  * height — but the bar no longer *is* the surface. The capsule is the surface, and it is
  * deliberately shorter than the bar so the bar keeps a visible edge above and below it: the
- * capsule is centred, so the gap at each end is `(TOP_BAR_HEIGHT - TOP_BAR_CAPSULE_HEIGHT) / 2`,
- * which is `SPACE_XS` (4 vp) at the height below.
+ * capsule is now pinned to the box's top with a named gap (`TOP_BAR_CAPSULE_TOP_GAP`), which is
+ * the same number centring used to give it.
  *
  * `MIN_TAP_TARGET` rather than a smaller number, and that is a constraint rather than a
  * preference: `topBarRow` draws a 返回 whose `constraintSize({ minHeight: MIN_TAP_TARGET })` is
@@ -106,6 +112,23 @@ const TOP_BAR_HEIGHT: number = 56;
  * tall and the bar is what is left over.
  */
 const TOP_BAR_CAPSULE_HEIGHT: number = MIN_TAP_TARGET;
+
+/**
+ * How far the capsule sits below the **top edge of the box it floats in**, in vp.
+ *
+ * **Derived, and this is the line that keeps the capsule still while the box grows.** Until
+ * r104 the capsule was centred in a `TOP_BAR_HEIGHT`-tall box, so this gap *was*
+ * `(TOP_BAR_HEIGHT - TOP_BAR_CAPSULE_HEIGHT) / 2`. Centring is no longer usable: the box is
+ * `TOP_BAR_BOX_HEIGHT` (80 vp) and centring in it would move the capsule down by half the
+ * increment — 12 vp — which is the one thing this round must not do. The capsule's top edge is
+ * measured at `136 px = 40.3 vp` on the reference device (`topInsetVp` 36 + this 4) and it has
+ * to stay there.
+ *
+ * Written as the expression rather than as `SPACE_XS` so the relationship survives: a later
+ * round that changes `TOP_BAR_CAPSULE_HEIGHT` gets the matching top gap for free instead of one
+ * more constant to keep in step. `SPACE_XS` (4) is what it evaluates to at the values above.
+ */
+const TOP_BAR_CAPSULE_TOP_GAP: number = (TOP_BAR_HEIGHT - TOP_BAR_CAPSULE_HEIGHT) / 2;
 
 /**
  * Corner radius of that capsule, in vp. **Derived from the height, never written down.**
@@ -125,23 +148,151 @@ const TOP_BAR_CAPSULE_HEIGHT: number = MIN_TAP_TARGET;
 const TOP_BAR_CAPSULE_RADIUS: number = TOP_BAR_CAPSULE_HEIGHT / 2;
 
 /**
- * How far the persistent chapter name sits below the page box's top edge, in vp.
+ * Room left inside the top bar's box **below the capsule** for the bar's own shadow, in vp.
  *
- * **A single tunable constant, and the one number on this screen a device measurement would
- * settle.** Reader Kit reserves its own 页眉 band — 68 vp at the top of the measured page box —
- * and draws no text in it: the kit's `pageHeaderContent` is only *read* by this app (as the
- * first source of the chapter title) and never printed. So the title goes in that band, above
- * the first line of live text. At `SPACE_M` a `TYPE_CAPTION` line occupies roughly 16–33 vp and
- * the kit's text starts at 68 vp, leaving ~35 vp of clearance — no collision is possible at any
- * font size the settings allow.
+ * **This is the shadow fix (r104), and its cause is measured rather than inferred.** On the
+ * device the top bar's paint stopped **dead** at `y = 311 px` — the 56 vp box's bottom edge,
+ * `36 + 56 = 92 vp = 310.5 px` — with the shadow's mean |Δ| holding flat at 10–11 for the 15 px
+ * below the capsule and then going `y=311: 1.55 → y=312: 0.00`. The **same frame's bottom bar is
+ * the control** and its shadow decays smoothly (`10.57 → 9.87 → … → 2.59`), reaching noise about
+ * **26.4 vp** below its own capsule. A blurred shadow cannot be at full strength at a boundary
+ * and exactly zero one pixel later, so the box's edge was cutting it.
  *
- * With full screen (see `applySystemAppearance` in `Index.ets`) the page box's top edge is the
- * **screen's** top edge, so this is also a distance from the top of the screen.
+ * **Which edge: the BOTTOM one.** Above the capsule the change does taper (dying within ~1.5 px
+ * of the box's top edge) and the top-side shadow is ~4× weaker — that is the material's own
+ * downward offset — so growing the box *upward* would not have helped. A top-anchored box grows
+ * downward naturally, which is what this is.
  *
- * Nothing else in the overlay is expressed in absolute vp, so if the device disagrees with the
- * reading above this is the one number to change.
+ * **It is a clearance, not a measurement**, for exactly the reason the bottom bar's own
+ * `BOTTOM_BAR_SHADOW_ROOM` says so of itself: no document publishes the material's shadow reach,
+ * and the reach varies with the device's compute level and the user's 沉浸光感 setting. What the
+ * measurement above *does* fix is a floor — the shadow was still decaying at 26 vp, so the box
+ * wants at least `4 + 48 + 26 = 78 vp`, and `SPACE_L` (24) puts it at 80.
+ *
+ * **It is also the whole cost of the change, stated rather than hidden.** The box *is* the band
+ * that belongs to the bar while the bars are shown, so every vp here is a vp of the page that
+ * does not turn a page while the bar is up (56 → 80 vp, i.e. 24 vp). While the bars are hidden
+ * the top bar is `HitTestMode.BLOCK_DESCENDANTS` with `opacity` 0 — not hit-testable — so the
+ * band costs nothing, and hidden is the default. This is the one knob that trades "more room for
+ * the shadow" directly against "more page the bar eats", and it is the number to lower first if
+ * the band reads badly on a device.
  */
-const PERSISTENT_TITLE_TOP: number = SPACE_M;
+const TOP_BAR_SHADOW_ROOM: number = SPACE_L;
+
+/**
+ * Height of the box the floating top bar is drawn in, in vp.
+ *
+ * **Not `TOP_BAR_HEIGHT` since r104.** `TOP_BAR_HEIGHT` is the bar's own content height — what
+ * places the capsule — and this is what the bar is *drawn* in. The extra 24 vp are all **below**
+ * the capsule, because the box is top-anchored (`.position({ left: 0, top: this.topInsetVp })`)
+ * and the capsule is pinned `TOP_BAR_CAPSULE_TOP_GAP` from the box's **top**; growing this number
+ * therefore adds nothing above the capsule and cannot move it by a pixel. That is also why the
+ * persistent title's anchor is derived from `TOP_BAR_HEIGHT` rather than from this constant: see
+ * `persistentTitleAnchorVp`.
+ *
+ * **Both places that ask the framework for a height use this constant and must stay equal** —
+ * the `Navigation`'s own `.height(...)` and `NavigationTitleOptions`' `height` inside
+ * `.title({ … })`. Which of the two nodes holds the clip cannot be told apart from the
+ * measurement (they are the same 56 vp today, and that is exactly where the paint stops), so
+ * growing both is the only version of the fix that is correct either way.
+ *
+ * A taller custom title bar is officially supported rather than a trick: the FAQ's
+ * `MaterialScopeAdaptExample` passes its own `@State titleHeight: number = 140` — 2.5× the
+ * default — to `.title({ builder, height: this.titleHeight }, { barStyle: BarStyle.STACK })`, so
+ * the height is a free app-chosen number.
+ *
+ * The bottom bar answers the same question the same way (`BOTTOM_BAR_BOX_HEIGHT` is its clearance
+ * plus its own `BOTTOM_BAR_SHADOW_ROOM`), so the two bars now read as one arrangement.
+ *
+ * **It is not a layout event.** The top bar is a `position`-anchored overlay sibling of the page
+ * layer, and the page box's size comes from `layoutWeight(1)` and from no child at all, so this
+ * height — like the bar's visibility — cannot reach the pagination box. The r100/r102 structural
+ * assertions still hold; see the `build()` element-tree checks.
+ */
+const TOP_BAR_BOX_HEIGHT: number = TOP_BAR_HEIGHT + TOP_BAR_SHADOW_ROOM;
+
+/**
+ * How far the persistent chapter name's **box** sits from the page box's left edge, in vp.
+ *
+ * **`27` is Reader Kit's own `paddingLeft`, which is the body text's layout origin** — the kit's
+ * `setPageConfig` log for this configuration prints `"paddingLeft":27, "paddingRight":27` (quoted
+ * in `resolveViewPort`), so putting the title's box here aligns it with the text **box-to-box**,
+ * which is the structurally right thing and what the user asked for (「和左边的文字对齐」).
+ *
+ * **Deliberately not on this project's `SPACE_` scale** (24 / 32): it is a platform metric being
+ * matched, not a spacing decision, and rounding it to `SPACE_L` would put the title 3 vp to the
+ * left of the text.
+ *
+ * **`103 px = 30.52 vp`, not 27 vp, is where the body's ink actually starts.** Measured over 24
+ * body lines on the reference device: continuation lines start at 103–106 px, indented first
+ * lines at 224–227 px (so the minimum is the true left edge), and the right ink edge is a hard
+ * `1215 px = 360 vp`. The ~3.5 vp between the layout origin and the ink is the title's own glyph
+ * bearing: putting the title's box *at* the ink edge would push its ink ~3.5 vp right of the
+ * text's. So the box goes at the layout origin and **`103 px` is the post-change verification
+ * target, not the input**.
+ */
+const PERSISTENT_TITLE_LEFT: number = 27;
+
+/**
+ * How far the persistent chapter name's box stops short of the page box's **right** edge, in vp.
+ *
+ * The overlay used `SPACE_L` on both sides so a long chapter name ellipsised inside the page
+ * rather than running to the screen's edges; only the left inset changed this round, so the right
+ * one keeps the theme constant it always had. The two are different numbers on purpose: the left
+ * one is a metric being matched, this one is breathing room.
+ */
+const PERSISTENT_TITLE_RIGHT: number = SPACE_L;
+
+/**
+ * How far each floating bar travels on its way in, in vp.
+ *
+ * The bars slide in from **their own edge of the screen**: the top bar starts `-BAR_SLIDE_OFFSET`
+ * (above where it rests) and the bottom bar starts `+BAR_SLIDE_OFFSET` (below), both settling at
+ * `0`. 30 vp is the value the user approved (「动画就用方案3」, whose description was
+ * `translate y = ∓(30vp) → 0`), and it is a *sub*-capsule travel on purpose: the capsule is 48 vp
+ * tall, so the bar is still partly on screen at the start of the slide and the motion reads as
+ * the bar arriving rather than as it falling in from nowhere.
+ *
+ * **`translate` is one of the four properties this may use.** It is a render-time transform and
+ * takes no part in layout, which is the hard constraint here: `height`, `padding`, `margin`,
+ * `layoutWeight` and anything else that can move the page layer are forbidden, because the two
+ * bars are `position`-anchored siblings of the page `Stack` and the kit's measured page box must
+ * be byte-identical whether they are shown or hidden. Animating a layout property would
+ * re-paginate the reading text, which the user ruled out (「文字的显示范围保持这样不变就行了」).
+ */
+const BAR_SLIDE_OFFSET: number = 30;
+
+/**
+ * The spring the bars' slide-in runs on: `curves.springMotion(response, dampingFraction)`.
+ *
+ * `response` is the spring's own response time in **seconds** and `dampingFraction` its damping
+ * coefficient (`@ohos.curves.d.ts`: 0 is undamped and oscillates forever, `0 < ζ < 1` is
+ * underdamped and overshoots, 1 is critical, above 1 is overdamped). The pair below is the one
+ * the user approved, and it is a **slight** overshoot by construction: at ζ = 0.85 the first
+ * overshoot is `exp(-πζ/√(1-ζ²)) ≈ 0.63%`, i.e. about `0.19 vp` on a 30 vp travel — under one
+ * pixel at 3.375 px/vp, so what the eye reads is a smooth settle rather than a bounce. That is
+ * the honest arithmetic, and it is why lowering `dampingFraction` is the one-line refinement if
+ * the user wants the bounce to be visible after installing (ζ = 0.7 gives ≈4.6%, ≈1.4 vp).
+ *
+ * **`duration` is inert beside this curve and that is documented, not an oversight.**
+ * `AnimateParam.duration`: 「curve配置 springMotion、responsiveSpringMotion、interpolatingSpring
+ * 曲线时，duration不生效，动画持续时间由弹簧曲线自身的物理参数…决定」. `BAR_SLIDE_DURATION_MS` is
+ * still passed because it is the number the approved option named and because it is what any
+ * future non-spring curve would use — but the timing on screen comes from these two numbers.
+ *
+ * The parameters are constants rather than literals at the `animateTo` call so the audit can pin
+ * them as a pair, and so the spring is one decision instead of a number that appears once and is
+ * then copied.
+ */
+const BAR_SLIDE_RESPONSE: number = 0.45;
+const BAR_SLIDE_DAMPING: number = 0.85;
+
+/**
+ * The `duration` handed to `animateTo` for the bars' slide, in ms. Inert under the spring above
+ * — see it for the citation — and kept because it is the approved option's own number and what a
+ * change of curve would start from.
+ */
+const BAR_SLIDE_DURATION_MS: number = 400;
 
 /**
  * Room left inside the bottom bar's box for the bar's own shadow, in vp.
@@ -156,7 +307,8 @@ const PERSISTENT_TITLE_TOP: number = SPACE_M;
  * **It does cost something, and this is the only place that cost is visible.** The box's height
  * is also the band that belongs to the bar while the bars are shown (`bottomBar` states the
  * consequence), so every vp added here is a vp of the page the bar takes while it is up. Hidden,
- * the bar is `Visibility.None` and the band costs nothing. This constant is therefore the one
+ * the bar is not hit-testable (`opacity` 0 + `HitTestMode.BLOCK_DESCENDANTS` since r104) and the
+ * band costs nothing. This constant is therefore the one
  * knob that trades "more room for the shadow" directly against "more page the bar eats", and it
  * is the number to lower first if the band reads badly on a device.
  */
@@ -1868,7 +2020,8 @@ export struct ReaderView {
    * **This is where the cost of the change is visible**, and it is the same cost `bottomBar`
    * documents for the box's height in general: the box *is* the band that belongs to the bar while
    * the bars are shown, so the band grows by the inset (27.9 vp on the reference device, i.e. from
-   * 120 to 148 vp). Hidden, the bar is `Visibility.None` and the band costs nothing — and hidden
+   * 120 to 148 vp). Hidden, the bar is not hit-testable — `opacity` 0 with
+   * `HitTestMode.BLOCK_DESCENDANTS` since r104 — and the band costs nothing — and hidden
    * is the default. `tools/verify-reader-chrome.mjs` asserts both halves of that: the band is the
    * box, and the box is the clearance plus the inset.
    */
@@ -2395,11 +2548,10 @@ export struct ReaderView {
    *
    * ## Why it is not in the top bar
    *
-   * Because the top bar is `Visibility.None` while the bars are down, and the title has to be
-   * visible then: that is what 常驻 means. So it is its own overlay, a sibling of the page layer
-   * inside the page `Stack`, declared **before** `topBar()` and `bottomBar()` so a revealed bar
-   * draws over it rather than the reverse — the same ordering rule the bars and the zones already
-   * obey.
+   * Because the top bar is hidden while the bars are down, and the title has to be visible then:
+   * that is what 常驻 means. So it is its own overlay, a sibling of the page layer inside the page
+   * `Stack`, declared **before** `topBar()` and `bottomBar()` so a revealed bar draws over it
+   * rather than the reverse — the same ordering rule the bars and the zones already obey.
    *
    * ## Exactly one chapter name is on screen at any moment
    *
@@ -2415,50 +2567,120 @@ export struct ReaderView {
    *    title is down. `chapterTitle` is empty there in any case, so the two statements do not
    *    even have a string to disagree about.
    *
-   * Both hidden states are `Visibility.None`, which is **not hit-testable**, and the visible state
-   * is wrapped in `HitTestMode.Transparent` besides — so this overlay can never take a tap from
-   * the three zones underneath it, whichever way the invariant is pointing.
+   * The hidden state is `Visibility.None`, which is **not hit-testable**, and the visible state is
+   * wrapped in `HitTestMode.Transparent` besides — so this overlay can never take a tap from the
+   * three zones underneath it, whichever way the invariant is pointing. (This overlay keeps
+   * `Visibility`, unlike the two bars: it does not animate, and nothing about its placement needs
+   * a frame in which it is still rendered.)
+   *
+   * ## Where it sits, and why it had to move (r104)
+   *
+   * The user: 「常显的章节名称也有点问题，现在正好显示在前置摄像头的挖孔里，看不到。我想把它移到顶部导
+   * 航栏的左下角，和左边的文字对齐」. The first half is **measured**: the title's ink was at
+   * `y 58–94 px, x 545–776 px` — centred on `660.5`, the exact screen centre — and the punch hole
+   * is `120 px` deep, so it really was inside the lens. (The hole's left/right extent was never
+   * measured, only its 120 px depth, so the ~120 px circle centred on x=660 is inference rather
+   * than a result.) Getting out of the hole is the point of this round; the alignment is the
+   * other half of what the user asked for.
+   *
+   * **Horizontally** the box goes at `PERSISTENT_TITLE_LEFT` (27 vp — Reader Kit's own
+   * `paddingLeft`, i.e. the body text's layout origin) and the `Text` is `TextAlign.Start`. See
+   * that constant for why it is the *box* and not the *ink* that is placed there, and for the
+   * `103 px` post-change verification target.
+   *
+   * **Vertically** it is `persistentTitleAnchorVp()` — a derived expression, never a literal.
+   * That method carries the derivation and the reason it is invariant to `TOP_BAR_SHADOW_ROOM`;
+   * the short version is that anchoring to the bar's own 56 vp band keeps the title in the gap
+   * above the first line of body text, while anchoring to the grown drawing box would put it on
+   * top of that line.
+   *
+   * **It is implemented as a container height, not as `padding({ top })`.** A top padding would
+   * have to know the `TYPE_CAPTION` line box's height to put the text's *bottom* at the anchor,
+   * and **ArkUI publishes no font metric for that**. So the anchor is a container of exactly the
+   * derived height with `justifyContent(FlexAlign.End)` and `alignItems(HorizontalAlign.Start)`:
+   * bottom-aligned and left-aligned, with no font metric needed at all. The outer column stays
+   * `height('100%')` and pinned, so this is still a full-size `position`-anchored sibling of the
+   * page layer and still cannot be a layout event for the kit's measured box.
+   *
+   * **Residual, stated rather than guessed.** Bottom-aligning puts the `Text`'s *line box* bottom
+   * at the anchor, so the **ink** lands ~2–4 vp above it: measured today, with `padding.top` =
+   * `SPACE_M` (16 vp = 54 px), the ink starts at 56–58 px, i.e. about 2 px of leading. If the
+   * intent is ink-bottom-at-the-edge then the container wants the anchor **+ ~3 vp**. That is a
+   * one-screenshot refinement for the user to settle after installing — **there is no device this
+   * round**, so it is recorded rather than baked in.
    *
    * ## Tone, and why it is not a chip
    *
    * `chromeMuted()` — the page's own secondary tone, the one the page indicator in the top bar
    * already wears (7.29 / 8.74 / 4.67:1 in light / dark / sepia, all above this project's 4.5:1
    * floor; sepia's 4.67 is the tightest and is not new here). It is the right role because the
-   * title sits **inside Reader Kit's reserved 页眉 band**, which the kit leaves empty, so it
-   * cannot land on live text and needs no opaque backing. `chromeSurface()` + `chromeText()` —
-   * the toast chip's pattern — is what a title that *could* overlap the text would need, and it
-   * is deliberately not spent here. `sheetRowMuted()`/`mutedForeground()` are out of the
-   * question: both are derived for a sheet's `card` row, not for the page.
-   *
-   * ## Placement
-   *
-   * `PERSISTENT_TITLE_TOP`, one constant, and the reasoning for its value lives with it. It is
-   * the only absolute vp in this overlay, so it is the only knob a device measurement would
-   * move. With full screen the page box's top edge is the screen's top edge, so the band is
-   * also measured from the top of the screen.
+   * title lands in the **empty band above the first line of live text**, so it needs no opaque
+   * backing. That band used to be described as Reader Kit's reserved 页眉 band (68 vp); what is
+   * *measured* is that the first body line's ink starts at `y 328 px = 97.2 vp`, so the anchor at
+   * `92 vp = 310.5 px` leaves about 18 px of clear page above the text — tighter than the old
+   * centred placement, and still tight enough to be legible without a surface behind it.
+   * `chromeSurface()` + `chromeText()` — the toast chip's pattern — is what a title that *could*
+   * overlap the text would need, and it is deliberately not spent here.
+   * `sheetRowMuted()`/`mutedForeground()` are out of the question: both are derived for a sheet's
+   * `card` row, not for the page.
    */
   @Builder
   private chapterOverlay() {
     Column() {
-      Text(this.chapterTitle)
-        .fontSize(TYPE_CAPTION)
-        .fontColor(this.chromeMuted())
-        .maxLines(1)
-        .textOverflow({ overflow: TextOverflow.Ellipsis })
-        .textAlign(TextAlign.Center)
+      // The anchor band. Its height is the whole placement mechanism; see this builder's note.
+      Column() {
+        Text(this.chapterTitle)
+          .fontSize(TYPE_CAPTION)
+          .fontColor(this.chromeMuted())
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          // `Start`, not `Center`: the title moved from the page's centre to the text's left edge.
+          .textAlign(TextAlign.Start)
+      }
+      .width('100%')
+      .height(this.persistentTitleAnchorVp())
+      .justifyContent(FlexAlign.End)
+      .alignItems(HorizontalAlign.Start)
+      // The left inset is the text's own layout origin (`PERSISTENT_TITLE_LEFT`) and the right one
+      // is breathing room so a long name ellipsises inside the page; the two are separate
+      // constants because they are separate reasons.
+      .padding({ left: PERSISTENT_TITLE_LEFT, right: PERSISTENT_TITLE_RIGHT })
     }
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Start)
-    // The inset is `SPACE_L` horizontally so a long chapter name ellipsises inside the page
-    // rather than running to the screen's edges.
-    .padding({ top: PERSISTENT_TITLE_TOP, left: SPACE_L, right: SPACE_L })
     // Pinned like the two bars: an overlay of the page, never a band of it.
     .position({ left: 0, top: 0 })
     // Belt and braces with the sibling order — `Transparent` means this overlay cannot consume a
     // tap that the zones below it would otherwise get. `Text` itself carries no handler.
     .hitTestBehavior(HitTestMode.Transparent)
     .visibility(this.chapterOverlayVisible() ? Visibility.Visible : Visibility.None)
+  }
+
+  /**
+   * Where the persistent chapter name's **line-box bottom** sits, in vp from the page box's top
+   * edge — which is the screen's top edge, because the window is full screen.
+   *
+   * **A derived expression, never a literal, and the derivation is the point.** It is the bottom
+   * edge of the top bar's **own `TOP_BAR_HEIGHT` band** — `topInsetVp + TOP_BAR_HEIGHT` — which is
+   * the measured `92 vp = 310.5 px` the bar's paint used to stop dead at, and which is what
+   * 「左下角」 most literally names: the bottom-left corner of the top navigation bar.
+   *
+   * **It is invariant to `TOP_BAR_SHADOW_ROOM` deliberately.** The drawing box grew 56 → 80 vp
+   * this round for the shadow, and a title anchored to the *grown* box would have been pushed
+   * 24 vp down — from `310 px` to `392 px` — and `392 px` is **on top of the first line of body
+   * text** (measured ink `y 328–385 px`). So naming `TOP_BAR_HEIGHT` here rather than
+   * `TOP_BAR_BOX_HEIGHT` is the difference between the title sitting in the clear page above the
+   * text and sitting in the text. Neither number is a literal: both are the named constants, so a
+   * later change to either moves the title with it.
+   *
+   * Reading `this.topInsetVp` is why the reader has a fourth read of that field, and the audit
+   * count that guards it was updated for this one — see `tools/verify-reader-chrome.mjs`. It is a
+   * **bar** metric (the bar's own bottom edge), it is read outside `build()`, and it reaches
+   * neither `resolveViewPort()` nor `toKitSettings()`, so it cannot move the pagination box.
+   */
+  private persistentTitleAnchorVp(): number {
+    return this.topInsetVp + TOP_BAR_HEIGHT;
   }
 
   /**
@@ -2497,7 +2719,8 @@ export struct ReaderView {
    *
    * ## Why it is an overlay rather than a band
    *
-   * The `Navigation` is `TOP_BAR_HEIGHT` tall, pinned to the top of the page `Stack` by
+   * The `Navigation` is `TOP_BAR_BOX_HEIGHT` tall (`TOP_BAR_HEIGHT` plus the shadow's room, since
+   * r104), pinned to the top of the page `Stack` by
    * `position`, and it holds no content. The kit paginates into the page `Stack`'s measured box,
    * so a bar that occupied layout space would move that box when it appeared — the trap
    * `bottomBar` used to carry a paragraph about, and the one that re-paginated a page in front
@@ -2523,10 +2746,12 @@ export struct ReaderView {
    *    the capsule inside it is the only surface. See the call for the layering citation.
    *  - **`expandSafeArea([], [])`** — `Navigation` expands into the safe area by default
    *    (`navigation.d.ts:1385`), and with `position` set the SDK applies `position` first and
-   *    the expansion second (`common.d.ts:17239`), which would let this 56 vp overlay draw
+   *    the expansion second (`common.d.ts:17239`), which would let this 80 vp overlay draw
    *    outside the box it was measured into. Empty arrays mean "expand nothing"
    *    (`common.d.ts:17216`).
-   *  - **`visibility(barsVisible || error)`** — see `topBarVisible`.
+   *  - **`opacity` + `translate` + `hitTestBehavior`** — since r104 this is what "hidden" means;
+   *    see the call. `Visibility.None` cannot animate, and `HitTestMode.BLOCK_DESCENDANTS` is
+   *    what keeps "not hit-testable" true for the whole subtree.
    */
   @Builder
   private topBar() {
@@ -2535,7 +2760,7 @@ export struct ReaderView {
       // surface the framework accepts a system material on.
     }
     .width('100%')
-    .height(TOP_BAR_HEIGHT)
+    .height(TOP_BAR_BOX_HEIGHT)
     .hideBackButton(true)
     // `barStyle` is a field of `NavigationTitleOptions`, not a `Navigation` attribute
     // (`navigation.d.ts:2324` is the only `title` overload and it takes the options object), so
@@ -2555,7 +2780,7 @@ export struct ReaderView {
     // what it *paints*, not what it *serves*. `systemMaterial` is still honoured only inside a
     // `Navigation`/`NavDestination` title bar, so the material's home does not move when the
     // surface does — the capsule is a child **inside** this title builder.
-    .title({ builder: this.topBarTitle, height: TOP_BAR_HEIGHT },
+    .title({ builder: this.topBarTitle, height: TOP_BAR_BOX_HEIGHT },
       { barStyle: BarStyle.STACK, backgroundColor: Color.Transparent })
     .expandSafeArea([], [])
     // Pinned, so the bar is an overlay of the page and never a band of it. See this builder's
@@ -2566,9 +2791,32 @@ export struct ReaderView {
     // is drawn under the lens. `topInsetVp` is 0 until the window answers and 0 on a device with no
     // top avoid area — which is the same geometry as before this change. See `resolveAvoidInsets`.
     .position({ left: 0, top: this.topInsetVp })
-    // Hidden by default, and a hidden bar is `Visibility.None`, which is **not hit-testable** —
-    // so "the bars are down" and "the three zones own the whole page" are the same statement.
-    .visibility(this.topBarVisible() ? Visibility.Visible : Visibility.None)
+    // --- hidden, since r104, is `opacity` + hit-testing rather than `Visibility` -----------
+    //
+    // **`Visibility.None` was the old spelling and it cannot animate.** A component that is not
+    // rendered has no property values to interpolate: an `animateTo` that flipped
+    // `barsVisible` would make the bar *appear* at its final position instead of sliding in,
+    // because the "from" frame never exists. So the bar stays `Visibility.Visible` and "hidden"
+    // becomes the pair below, which is what the state machine now means by it.
+    //
+    // `HitTestMode.BLOCK_DESCENDANTS` — **not `None`, and the difference is the whole
+    // equivalence.** `@ohos` `enums.d.ts` declares `None` as 「The node itself does not respond to
+    // the hit test and **does not block the hit test of child nodes**, sibling nodes, and ancestor
+    // nodes」 and `BLOCK_DESCENDANTS` (`@since 20`, so it needs no API guard at this project's
+    // `compatibleSdkVersion` 24) as 「The node itself does not respond to the hit test, and **all
+    // its descendants** (children, grandchildren, and more) also do not respond… It does not
+    // affect the hit test of ancestor nodes」. The interactive parts of this bar are **children**
+    // — the 返回 `Button`, and inside the capsule — so `None` on the `Navigation` alone would
+    // leave a hidden bar's 返回 tappable, which `Visibility.None` did not. `BLOCK_DESCENDANTS`
+    // takes the whole subtree out and touches neither siblings nor ancestors, which is exactly
+    // `Visibility.None`'s hit-test semantics. The invariant is therefore "hidden ⇒ not
+    // hit-testable", unchanged, and the audit still guards it.
+    //
+    // The pair is also why the band costs nothing at rest: hidden is the default, and a hidden
+    // bar neither paints nor takes a tap.
+    .opacity(this.topBarVisible() ? 1 : 0)
+    .translate({ y: this.topBarVisible() ? 0 : -BAR_SLIDE_OFFSET })
+    .hitTestBehavior(this.topBarVisible() ? HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
   }
 
   /**
@@ -2626,19 +2874,28 @@ export struct ReaderView {
    * system tint, **in the requested capsule shape at the requested radius**. The material is
    * what degrades, not the design; the branch is why that sentence is true.
    *
-   * The spec's companion for `ULTRA_THIN` is 渐变模糊, and it is **not** implemented. The reason
-   * is the same document set: a material's `materialFilter` already contains the background
-   * blur, and stacking a blur on a material is repeated work the power guide forbids
-   * (「沉浸式系统材质自带的材质滤镜（materialFilter）已包含背景模糊效果，再叠加…属于重复处理」,
-   * 沉浸光感功耗优化 · 避免与模糊效果叠加). Recorded as a departure rather than silently skipped;
-   * so is the fact that a `Navigation` title bar offers no gradient-mask parameter to put one in.
+   * The material is **`THIN` since r104**, not the `ULTRA_THIN` the spec prescribes for 顶部悬浮:
+   * the user directed that the top bar follow the bottom bar (「以底栏为准」), and `THIN` is what
+   * that bar's HDS policy actually resolves to. `immersiveTopBarMaterialOption` carries the whole
+   * of that reasoning and its cost.
+   *
+   * **Neither thickness's spec companion is implemented, and each is missing for its own reason.**
+   * `ULTRA_THIN`'s is 渐变模糊 and it is deliberately not done: a material's `materialFilter`
+   * already contains the background blur, and stacking a blur on a material is repeated work the
+   * power guide forbids (「沉浸式系统材质自带的材质滤镜（materialFilter）已包含背景模糊效果，再叠加…
+   * 属于重复处理」, 沉浸光感功耗优化 · 避免与模糊效果叠加). `THIN`'s is **渐变颜色蒙层**, which is
+   * *unavailable* rather than skipped: a `Navigation` title bar offers no mask parameter, and the
+   * gradient mask the bottom bar has comes from `HdsTabs`' `barFloatingStyle`. Both are recorded
+   * as departures rather than left to be rediscovered.
    */
   @Builder
   private topBarTitle() {
-    // Two levels, and the split is the change: the outer column is the **bar's** content and is
-    // one bar tall, the inner column is the **capsule** and is shorter than the bar. A single
-    // level could not express "the capsule is not the bar" — it would make `TOP_BAR_HEIGHT` a
-    // property of what is drawn inside the bar rather than of the bar.
+    // Two levels, and the split is the change: the outer column is the **box's** content and fills
+    // it, the inner column is the **capsule** and is shorter than the bar. A single level could not
+    // express "the capsule is not the bar" — it would make `TOP_BAR_HEIGHT` a property of what is
+    // drawn inside the bar rather than of the bar. Since r104 the outer column also *pins* the
+    // capsule to the box's top instead of centring it, so the box can grow for the shadow without
+    // the capsule moving; see the call.
     Column() {
       if (this.topBarMaterialObject !== undefined) {
         Column() {
@@ -2684,10 +2941,19 @@ export struct ReaderView {
     }
     .width('100%')
     .height('100%')
-    .justifyContent(FlexAlign.Center)
+    // **`Start` plus an explicit top gap, not `Center`, since r104 — and this is the line that
+    // keeps the capsule still.** The box is `TOP_BAR_BOX_HEIGHT` (80 vp) while the capsule is
+    // `TOP_BAR_CAPSULE_HEIGHT` (48), and the extra 24 vp is the shadow's room *below* the
+    // capsule. Centring would put half of that increment — 12 vp — above the capsule as well and
+    // move it down by 12 vp, which is the one visible regression this round could introduce: the
+    // capsule's top edge is measured at `136 px` and must stay there. Pinning it
+    // `TOP_BAR_CAPSULE_TOP_GAP` from the box's top leaves every added vp below it.
+    .justifyContent(FlexAlign.Start)
+    .padding({ top: TOP_BAR_CAPSULE_TOP_GAP })
     // Explicit rather than inherited: this column is what centres a capsule that is now **narrower
     // than the bar** (`FLOATING_BAR_WIDTH` instead of the full width), so the alignment is load
-    // bearing in a way it was not when the capsule filled the space by itself.
+    // bearing in a way it was not when the capsule filled the space by itself. Horizontal only:
+    // the vertical placement is the `Start` above.
     .alignItems(HorizontalAlign.Center)
   }
 
@@ -2707,8 +2973,9 @@ export struct ReaderView {
    * controls, which is the worse trade.
    *
    * The vertical padding is the title bar's business now, not this row's: the container in
-   * `topBarTitle` is `TOP_BAR_HEIGHT` tall and centres this row in it, so the bar's height is a
-   * constant the layout can be reasoned about instead of a sum of paddings and glyph metrics.
+   * `topBarTitle` is `TOP_BAR_BOX_HEIGHT` tall and pins this row to its top, so the bar's height
+   * is a constant the layout can be reasoned about instead of a sum of paddings and glyph
+   * metrics — and the row does not move when the box grows for the shadow.
    */
   @Builder
   private topBarRow() {
@@ -2832,9 +3099,48 @@ export struct ReaderView {
    *
    * `tools/verify-reader-chrome.mjs` asserts that as a count — one writer, in this method, and
    * none of the sheet's callbacks among them.
+   *
+   * ## The slide-in (r104), and why the write happens inside the animation closure
+   *
+   * The user chose the spring slide: 「动画就用方案3」, described to them as
+   * `animateTo({ duration: 400, curve: curves.springMotion(0.45, 0.85) })` with
+   * `顶栏/底栏: translate y = ∓(30vp) → 0` and `opacity: 0→1`. So this is an **explicit**
+   * animation (`animateTo`) rather than a `TransitionEffect`: the two bars stay
+   * `Visibility.Visible` and their `translate`/`opacity` are *derived from `barsVisible`* in
+   * `topBar`/`bottomBar`, so flipping the boolean inside the closure is the whole driver. There is
+   * no second state variable, no `onFinish` callback and no three-state `Visibility` — a separate
+   * "am I animating out" flag would be a second source of truth for the bars' visibility, which
+   * this project has already paid for once (the four rounds of `sheetOpen`/`sheetBlur` cycle
+   * machinery).
+   *
+   * **`animationOn` is the gate, and "off" means no tween at all rather than a zero-length one.**
+   * The setting is the same `@StorageLink(MOTION_ON_KEY)` that drives `.clickEffect(...)`
+   * everywhere else, so the whole app's motion switches together and this cannot drift from the
+   * settings page. When it is off the assignment is made directly, outside any animation context,
+   * and the bars **snap**: `animateTo` is skipped, not handed `duration: 0`.
+   *
+   * **Only `opacity` and `translate` move.** That is a hard constraint, not a style choice: the
+   * bars are `position`-anchored siblings of the page layer, and the kit's measured page box must
+   * be byte-identical whether they are shown or hidden. `height`, `padding`, `margin`,
+   * `layoutWeight` and every other layout-affecting property are therefore off limits — animating
+   * one would re-paginate the text, which the user ruled out
+   * (「文字的显示范围保持这样不变就行了」). `opacity` and `translate` are both render-time only.
    */
   private toggleBars(): void {
-    this.barsVisible = !this.barsVisible;
+    // One assignment site, reached from both paths, so `barsVisible` keeps exactly the one
+    // textual writer the audit counts — and so the animated and un-animated paths cannot diverge.
+    const apply: () => void = (): void => {
+      this.barsVisible = !this.barsVisible;
+    };
+    if (!this.animationOn) {
+      apply();
+      return;
+    }
+    this.getUIContext().animateTo({
+      // Inert beside a spring curve, and documented as such — see `BAR_SLIDE_DURATION_MS`.
+      duration: BAR_SLIDE_DURATION_MS,
+      curve: curves.springMotion(BAR_SLIDE_RESPONSE, BAR_SLIDE_DAMPING),
+    }, apply);
   }
 
   // --- the progress row is gone ---------------------------------------------
@@ -2933,7 +3239,7 @@ export struct ReaderView {
    * It is **not** the whole page, because `Tabs` is a swipeable container: at full height its
    * content region would take the reader's page-turn swipes away from the kit. The cost is stated
    * rather than hidden: **while the bars are shown**, a tap inside the box belongs to the bar and
-   * does not turn a page. While they are hidden the bar is `Visibility.None`, which is not
+   * does not turn a page. While they are hidden the bar is not hit-testable, which is not
    * hit-testable, so the band behaves as if the bar were not there — and hidden is the default.
    * Growing the box from 96 to 120 vp widened that band by 24 vp; the gesture inset widens it by
    * the inset again (27.9 vp on the reference device, so 120 → 148 vp). Both increments cost
@@ -3011,7 +3317,20 @@ export struct ReaderView {
     // Bottom-anchored overlay of the page, and the third of the three facts that keep the
     // measured page box independent of the bars. See this builder's note.
     .position({ left: 0, bottom: 0 })
-    .visibility(this.barsVisible ? Visibility.Visible : Visibility.None)
+    // --- hidden, since r104, is `opacity` + hit-testing rather than `Visibility` -----------
+    //
+    // The same conversion as `topBar` carries, and for the same reason: `Visibility.None` is not
+    // rendered, so there is no "from" frame for a slide to start in and the bar would pop rather
+    // than arrive. It slides in from **below** its resting position (+`BAR_SLIDE_OFFSET`), which
+    // is the mirror of the top bar's -`BAR_SLIDE_OFFSET`; see `topBar` for why
+    // `HitTestMode.BLOCK_DESCENDANTS` and not `None` is what makes "hidden ⇒ not hit-testable"
+    // survive the conversion — the four `HdsTabs` cells live *inside* this node.
+    //
+    // `translate` is render-only, so this cannot be a layout event for the kit's measured box —
+    // which is the hard constraint on what may be animated here.
+    .opacity(this.barsVisible ? 1 : 0)
+    .translate({ y: this.barsVisible ? 0 : BAR_SLIDE_OFFSET })
+    .hitTestBehavior(this.barsVisible ? HitTestMode.Default : HitTestMode.BLOCK_DESCENDANTS)
   }
 
   /**
@@ -3708,9 +4027,10 @@ export struct ReaderView {
    *   5. the two bars **above** the zones, so a tap inside a bar's own bounds reaches the bar
    *      and is not also a page turn. Material does not affect hit testing — it paints
    *      background, border, blur and shadow and nothing else — so this ordering is the entire
-   *      mechanism that gives a bar its own taps. A hidden bar is `Visibility.None`, which is
-   *      also not hit-testable, so "the bars are down" and "the zones own the page" are one
-   *      statement rather than two that have to agree.
+   *      mechanism that gives a bar its own taps. A hidden bar is not hit-testable — `opacity` 0
+   *      with `HitTestMode.BLOCK_DESCENDANTS` since r104, which is the same statement
+   *      `Visibility.None` used to make for it — so "the bars are down" and "the zones own the
+   *      page" are one statement rather than two that have to agree.
    *
    * The failure screen is the one alternative inside that structure: the kit is replaced by the
    * message, the zones and the bottom bar are absent (there is no page to turn and no entries
