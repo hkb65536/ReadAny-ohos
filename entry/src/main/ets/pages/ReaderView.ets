@@ -1757,7 +1757,9 @@ export struct ReaderView {
    * (`@ohos.window.d.ts`, `interface Rect`: "Left boundary of the rectangle, in px. The value
    * must be an integer"). There is **no** `getWindowAvoidAreaSync` in this SDK and no vp-typed
    * overload of it: the method is already synchronous, it takes one `AvoidAreaType` and it returns
-   * px, so the px→vp step is this side's to make (`this.getUIContext().px2vp`).
+   * px, so the px→vp step is this side's to make (`this.getUIContext().px2vp`) — rounded **up**, to
+   * the next whole vp, because a clearance may not stop short and because an integer is what both
+   * the log line and `.diag/r102-capture.ps1` read.
    *
    * The types this screen reads, with their enumeration:
    *
@@ -1812,8 +1814,13 @@ export struct ReaderView {
           const cutoutTopPx: number = topBandPx(cutout.topRect);
           const systemTopPx: number = topBandPx(system.topRect);
           const gesturePx: number = bottomBandPx(gesture.bottomRect);
-          this.topInsetVp = this.getUIContext().px2vp(Math.max(cutoutTopPx, systemTopPx));
-          this.bottomInsetVp = this.getUIContext().px2vp(gesturePx);
+          // **Rounded up, deliberately, and not only for the log.** `px2vp` returns a fraction
+          // (195 px / 3.375 = 57.78 vp) and an inset is a *clearance*: the next whole vp is the safe
+          // direction, where the nearest one can be a fraction of a px short of the band it clears.
+          // It also keeps the two values integers, which is what the log line below formats them as
+          // (`%{public}d`) and what `.diag/r102-capture.ps1` reads back out.
+          this.topInsetVp = Math.ceil(this.getUIContext().px2vp(Math.max(cutoutTopPx, systemTopPx)));
+          this.bottomInsetVp = Math.ceil(this.getUIContext().px2vp(gesturePx));
           hilog.info(
             DOMAIN,
             TAG,
