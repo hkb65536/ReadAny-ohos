@@ -179,6 +179,32 @@ export const BREAKPOINT_LARGE: number = 840;
  */
 export const FLOATING_BAR_SIDE_MARGIN: number = 16;
 /**
+ * Width of a floating bar's capsule, in vp.
+ *
+ * **One number for both of the reader's bars**, and it is HDS's own rather than a preference.
+ * `HdsTabsFloatingStyle.barWidth` is documented in the design reference (设计规范 · HdsTabs ·
+ * `barWidth`):
+ *
+ *   页签个数小于等于3时，且HdsTabs宽度小于600vp，页签栏宽度等于76vp*页签个数+8vp，当HdsTabs宽度
+ *   大于等于600vp时，页签栏宽度等于80vp*页签个数+8vp。**页签个数大于等于4时，页签栏最大宽度不超过
+ *   328vp。**
+ *
+ * The reader's bar carries four cells, so HDS gives it that cap — and the top capsule, which is a
+ * plain `Column` inside a `Navigation` title builder with no HDS constraint on it at all, is
+ * pinned to the same number so the two bars cannot drift apart. The bottom bar *states* the same
+ * value through `barFloatingStyle.barWidth` rather than leaving it to HDS's breakpoint default:
+ * what the user sees is then one constant read by both bars, not two independent computations
+ * that happen to agree today.
+ *
+ * The declaration publishes no numeric default (`HdsBarWidthRangeOptions` documents only
+ * "Sets width of bar when tabs width is less than 440vp" per tier), so the cap above is the
+ * number, and pinning all three tiers is what makes the bar's width breakpoint-independent.
+ *
+ * Handed to HDS as a **unit-bearing string**, for the same reason the two margins are: HDS parses
+ * these with a unit parser and silently drops a bare number.
+ */
+export const FLOATING_BAR_WIDTH: number = 328;
+/**
  * Background for a surface that may be drawn by the system material.
  *
  * `systemMaterial` controls a component's background, border and shadow, and the docs

@@ -1,5 +1,5 @@
 import { common } from '@kit.AbilityKit';
-import { display, SymbolGlyphModifier } from '@kit.ArkUI';
+import { display, SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { bookParser, ReadPageComponent, readerCore } from '@kit.ReaderKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
@@ -29,6 +29,7 @@ import {
   FLOATING_BAR_CLEARANCE,
   FLOATING_BAR_MASK_HEIGHT,
   FLOATING_BAR_SIDE_MARGIN,
+  FLOATING_BAR_WIDTH,
   MIN_TAP_TARGET,
   paletteFor,
   RADIUS_CARD,
@@ -118,7 +119,7 @@ const TOP_BAR_CAPSULE_HEIGHT: number = MIN_TAP_TARGET;
  * box, not its visible box — and the documented remedy is exactly `borderRadius`
  * (沉浸光感常见问题 · 材质渲染区域与组件可视区域不一致: 「通过 width、height、borderRadius 接口
  * 控制组件可视区域与材质渲染区域一致」, whose own example is a 100x40 Capsule `Progress` given a
- * radius of half its height). Without this line the capsule's material would be a 359 x 48
+ * radius of half its height). Without this line the capsule's material would be a 328 x 48
  * rectangle with a rounded component drawn on top of it.
  */
 const TOP_BAR_CAPSULE_RADIUS: number = TOP_BAR_CAPSULE_HEIGHT / 2;
@@ -224,6 +225,29 @@ const SHEET_MIN_HEIGHT: string = '50%';
  */
 function sheetDetents(): [SheetSize | Length, (SheetSize | Length)?] {
   return [SHEET_MIN_HEIGHT, SheetSize.LARGE];
+}
+
+/**
+ * How far a **top-anchored** avoid-area rect reaches down from the screen's top edge, in px.
+ *
+ * `window.Rect` carries both `top` and `height` and does not promise `top === 0`, so the extent is
+ * the far edge rather than the height alone — for the top bands of `TYPE_SYSTEM` and `TYPE_CUTOUT`
+ * the two are the same number. Clamped at 0 rather than trusted: "the window cannot describe an
+ * avoid area here" must mean a bar at the screen's top edge, never a bar drawn above the screen.
+ */
+function topBandPx(rect: window.Rect): number {
+  return Math.max(0, rect.top + rect.height);
+}
+
+/**
+ * Height of a **bottom-anchored** avoid-area rect, in px.
+ *
+ * The gesture bar is the only bottom band this screen reads, and its own height is the whole
+ * distance to clear (`SCBGestureNavBar14` = `[0, 2754, 1320, 94]`, i.e. 94 px on the reference
+ * device), so there is no `top` term here.
+ */
+function bottomBandPx(rect: window.Rect): number {
+  return Math.max(0, rect.height);
 }
 
 /**
@@ -761,6 +785,9 @@ export struct ReaderView {
   aboutToAppear(): void {
     this.settingsApplied = false;
     this.live = copySettings(this.settings);
+    // The two bars are placed by the window's avoid areas, not by the page box. Read once, here,
+    // so the first reveal is already in the right place. See `resolveAvoidInsets`.
+    this.resolveAvoidInsets();
   }
 
   /**
@@ -1682,6 +1709,166 @@ export struct ReaderView {
   @State private viewWidth: number = 0;
   @State private viewHeight: number = 0;
 
+  // --- the window's avoid areas, and the two bars that move for them (r102) ----------
+  //
+  // **These two numbers move the BARS and nothing else.** The page layer's measured box — the
+  // one `onAreaChange` reports, `resolveViewPort` scales and `setPageConfig` paginates — is not
+  // read, written or padded by anything in this section, and the user asked for exactly that:
+  // 「文字的显示范围保持这样不变就行了」. The bars are `position`-anchored overlays of the page
+  // `Stack`, so moving them is invisible to the box by construction. The cost is stated where it
+  // is real: a bar that sits lower (top) or higher (bottom) covers a little more of the first or
+  // last line while it is up — and the bottom bar's box, which is the band that belongs to the
+  // bar while it is shown, grows by the gesture-bar inset.
+
+  /**
+   * How far the floating top bar is held below the screen's top edge, in vp.
+   *
+   * Zero until the window answers, and zero is also the correct answer for a device whose window
+   * reports no top avoid area at all — see `resolveAvoidInsets`. The bars are hidden at rest, so
+   * this arriving one frame late is not something the reader can see.
+   */
+  @State private topInsetVp: number = 0;
+
+  /**
+   * How far the floating bottom bar's capsule is lifted to clear the gesture navigation bar, in vp.
+   *
+   * Added to `FLOATING_BAR_BOTTOM_MARGIN` for the capsule's own anchor and to
+   * `BOTTOM_BAR_BOX_HEIGHT` for the box it floats in; see `bottomBarMarginVp` and
+   * `bottomBarBoxHeight`.
+   */
+  @State private bottomInsetVp: number = 0;
+
+  /**
+   * Read the window's avoid areas, once, and keep the two numbers the bars are placed by.
+   *
+   * ## Why this exists
+   *
+   * `Index.applySystemAppearance` puts the window in full screen and hides the status bar, so the
+   * layout no longer avoids anything. The status bar is a *system UI element* and going away is
+   * fine; **the camera cutout is a hole in the screen and does not go away with it**, so a top bar
+   * placed at `top: 0` is drawn under the lens. That is the user's report, verbatim: 「我的屏幕上
+   * 还有前置摄像头的挖孔，我想让顶栏在挖孔的下面」. The same full-screen change leaves the bottom bar
+   * sitting on the gesture bar (「底栏要稍微上移一点，避让系统导航条」).
+   *
+   * ## Where the numbers come from
+   *
+   * `window.Window.getWindowAvoidArea(type)` returns a `window.AvoidArea` — `visible` plus four
+   * `Rect`s (`leftRect`/`topRect`/`rightRect`/`bottomRect`) — and the rects are **in px**
+   * (`@ohos.window.d.ts`, `interface Rect`: "Left boundary of the rectangle, in px. The value
+   * must be an integer"). There is **no** `getWindowAvoidAreaSync` in this SDK and no vp-typed
+   * overload of it: the method is already synchronous, it takes one `AvoidAreaType` and it returns
+   * px, so the px→vp step is this side's to make (`this.getUIContext().px2vp`).
+   *
+   * The types this screen reads, with their enumeration:
+   *
+   *  - **`TYPE_CUTOUT = 1`** (`@since 7`) — "Cutout area", i.e. the punch hole itself. A cutout at
+   *    the top of the screen is reported through `topRect`, which is the shape the official
+   *    沉浸式 sample handles (沉浸式窗口 · `immersive-window-feature`, `handleCutoutAvoidArea`).
+   *  - **`TYPE_SYSTEM = 0`** (`@since 7`) — "Default area of the system. It contains the status bar
+   *    and three-button navigation bar." This is the documented proxy for a punch hole and the
+   *    fallback when the cutout type reports nothing: `window-faqs` · 如何获取状态栏高度 —
+   *    「主窗口全屏时，可以通过 getWindowAvoidArea() 获取到包含状态栏的避让区域」.
+   *  - **`TYPE_NAVIGATION_INDICATOR = 4`** (`@since 11`) — "Bottom navigation bar", the gesture
+   *    bar: 27.9 vp on the reference device (`SCBGestureNavBar14` = `[0, 2754, 1320, 94]`).
+   *
+   * **No runtime guard on any of the three**, and that is the deliberate part: 7 / 7 / 11 are all
+   * far below this app's `compatibleSdkVersion` 24, so unlike `uiMaterial.ImmersiveMaterial`
+   * (`@since 26.0.0`, which `topBarMaterialOption` guards for API-24 devices) a version check here
+   * would be dead code that reads as a live floor. (The SDK's other avoid-area member,
+   * `TYPE_FLOAT_NAVIGATION = 5`, **is** `@since 26.0.0` — and is not read here for that reason as
+   * well as because a float-navigation area is not this screen's problem.)
+   *
+   * **The top inset is a maximum, not a choice between the two.** A punch hole is normally *inside*
+   * the status-bar band, so the cutout's own height can be smaller than the band; taking the larger
+   * of the two is what the official sample does
+   * (`Math.max(topAvoidHeight, cutoutAvoidArea.topRect.height)`) and it is the safe direction —
+   * clearing the taller of the two always clears both. `top + height` rather than `height` alone
+   * because the rect is not guaranteed to start at the screen's top edge; a top-anchored band has
+   * `top === 0` and the two are then the same number.
+   *
+   * **Both raw values are logged**, in px and in the unit they were converted from: if a device
+   * answers 0 for both, the bars stay exactly where r101 put them and the log is the evidence —
+   * this is a measurement this round could not take on the device, and guessing a constant here
+   * would push the bar down over the text on every device that has nothing to clear.
+   *
+   * **Read once, not subscribed.** The values are not live: the window publishes changes through
+   * `on('avoidAreaChange')`, and wiring that is a separate behaviour rather than a second read —
+   * a rotation re-paginates through the measured box anyway, and a landscape cutout is reported on
+   * the *left* edge, which is a different inset than the one this screen places a top bar by.
+   *
+   * A failure is log-and-continue: the insets stay 0, which is the pre-r102 geometry and leaves the
+   * reader fully usable.
+   */
+  private resolveAvoidInsets(): void {
+    try {
+      const context: common.UIAbilityContext = this.getUIContext()
+        .getHostContext() as common.UIAbilityContext;
+      window.getLastWindow(context)
+        .then((win: window.Window): void => {
+          const cutout: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_CUTOUT);
+          const system: window.AvoidArea = win.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM);
+          const gesture: window.AvoidArea =
+            win.getWindowAvoidArea(window.AvoidAreaType.TYPE_NAVIGATION_INDICATOR);
+          const cutoutTopPx: number = topBandPx(cutout.topRect);
+          const systemTopPx: number = topBandPx(system.topRect);
+          const gesturePx: number = bottomBandPx(gesture.bottomRect);
+          this.topInsetVp = this.getUIContext().px2vp(Math.max(cutoutTopPx, systemTopPx));
+          this.bottomInsetVp = this.getUIContext().px2vp(gesturePx);
+          hilog.info(
+            DOMAIN,
+            TAG,
+            'avoid areas: cutout top %{public}d px, status bar top %{public}d px, gesture bar %{public}d px'
+              + ' -> top inset %{public}d vp, bottom inset %{public}d vp',
+            cutoutTopPx,
+            systemTopPx,
+            gesturePx,
+            this.topInsetVp,
+            this.bottomInsetVp,
+          );
+        })
+        .catch((err: Object): void => {
+          hilog.warn(DOMAIN, TAG, 'avoid areas unavailable: %{public}s', String(err));
+        });
+    } catch (err) {
+      // No UI context yet, or no host window: the insets stay 0 and the reader is usable.
+      hilog.warn(DOMAIN, TAG, 'avoid areas not read: %{public}s', String(err));
+    }
+  }
+
+  /**
+   * The capsule's distance from the bottom of its box, in vp: the design's own margin **plus** the
+   * gesture bar's inset.
+   *
+   * Returned as a number and formatted with its unit at the call site, because
+   * `HdsTabsFloatingStyle.barBottomMargin` must be a **unit-bearing string** — HDS parses it with a
+   * unit parser and silently drops a bare number (`ParseProp failed parse property barBottomMargin`),
+   * a trap this project has already hit once.
+   */
+  private bottomBarMarginVp(): number {
+    return FLOATING_BAR_BOTTOM_MARGIN + this.bottomInsetVp;
+  }
+
+  /**
+   * Height of the box the floating bottom bar is drawn in, in vp, **including the gesture bar**.
+   *
+   * `BOTTOM_BAR_BOX_HEIGHT` is the box for a bar sitting on the screen's bottom edge: the 56 vp
+   * capsule, its 8 vp margin and the 32 vp gradient mask above it (96, the shell's own clearance),
+   * plus `BOTTOM_BAR_SHADOW_ROOM` for the material's shadow. Lifting the capsule by the gesture
+   * inset adds exactly that many vp of painted content *inside* the box — the mask still has to
+   * reach the screen's bottom edge, or the bottom strip of the screen would carry un-faded text
+   * under the gesture bar — so the box has to grow by the same amount.
+   *
+   * **This is where the cost of the change is visible**, and it is the same cost `bottomBar`
+   * documents for the box's height in general: the box *is* the band that belongs to the bar while
+   * the bars are shown, so the band grows by the inset (27.9 vp on the reference device, i.e. from
+   * 120 to 148 vp). Hidden, the bar is `Visibility.None` and the band costs nothing — and hidden
+   * is the default. `tools/verify-reader-chrome.mjs` asserts both halves of that: the band is the
+   * box, and the box is the clearance plus the inset.
+   */
+  private bottomBarBoxHeight(): number {
+    return BOTTOM_BAR_BOX_HEIGHT + this.bottomInsetVp;
+  }
+
   /**
    * The reading area in device pixels: the box the kit paginates into.
    *
@@ -2298,7 +2485,7 @@ export struct ReaderView {
    * The container inside `topBarTitle` is what carries the material, which is the shape the
    * official 正例 uses — 「在Navigation标题栏中为局部容器设置沉浸式系统材质，材质生效且面积可控」
    * (沉浸光感功耗优化) — and since r101 that container is a **capsule**, so the material's area is
-   * one 359 x 48 surface rather than a full-width 391 x 56 bar and certainly not a page, which is
+   * one 328 x 48 surface rather than a full-width 391 vp x 56 bar and certainly not a page, which is
    * the same guide's first rule (「控制材质使用面积」).
    *
    * ## Why it is an overlay rather than a band
@@ -2366,7 +2553,12 @@ export struct ReaderView {
     .expandSafeArea([], [])
     // Pinned, so the bar is an overlay of the page and never a band of it. See this builder's
     // note: this is the whole of why the measured page box cannot move.
-    .position({ left: 0, top: 0 })
+    //
+    // **`top` is the cutout inset, not 0 (r102).** The status bar is hidden but the camera's punch
+    // hole is not a status bar, so the bar has to start below the window's own top avoid area or it
+    // is drawn under the lens. `topInsetVp` is 0 until the window answers and 0 on a device with no
+    // top avoid area — which is the same geometry as before this change. See `resolveAvoidInsets`.
+    .position({ left: 0, top: this.topInsetVp })
     // Hidden by default, and a hidden bar is `Visibility.None`, which is **not hit-testable** —
     // so "the bars are down" and "the three zones own the whole page" are the same statement.
     .visibility(this.topBarVisible() ? Visibility.Visible : Visibility.None)
@@ -2392,9 +2584,10 @@ export struct ReaderView {
    * ## The capsule, and why the bar around it is invisible
    *
    * Since r101 the bar is a full-width `Navigation` title bar that **paints nothing**
-   * (`NavigationTitleOptions.backgroundColor(Color.Transparent)`; see `topBar`) with a 359 vp
-   * capsule floating inside it. The user asked for 完全圆头 — a fully rounded head — and the
-   * radius is derived from the capsule's own height, never written down: see
+   * (`NavigationTitleOptions.backgroundColor(Color.Transparent)`; see `topBar`) with a capsule
+   * floating inside it — `FLOATING_BAR_WIDTH` wide since r102, which is the bottom bar's own
+   * width rather than the shell's full content width. The user asked for 完全圆头 — a fully rounded
+   * head — and the radius is derived from the capsule's own height, never written down: see
    * `TOP_BAR_CAPSULE_HEIGHT` (one tap target, because the 返回 inside it is) and
    * `TOP_BAR_CAPSULE_RADIUS` (= height / 2, and load-bearing for the material's paint area).
    *
@@ -2444,15 +2637,25 @@ export struct ReaderView {
         Column() {
           this.topBarRow()
         }
-        .width('100%')
+        // **The capsule's width is the bottom bar's width (r102), and it is stated as a width
+        // rather than as a pair of margins.** It used to be `width('100%')` inset by
+        // `FLOATING_BAR_SIDE_MARGIN` on each side — the shell's full content width, which is much
+        // wider than the floating bar floating below it. The user: 「顶栏的宽度就和底栏一样就够了」.
+        // `FLOATING_BAR_WIDTH` is the number HDS gives that bar (`HdsTabsFloatingStyle.barWidth`,
+        // ≥4 cells: 328 vp maximum) and the bottom bar is pinned to the same constant, so the two
+        // cannot drift apart; the column below centres this one.
+        //
+        // **The margin is removed rather than kept beside the width.** Both at once would mean a
+        // 328 vp capsule that is *also* inset 16 vp from the box it no longer needs insetting from:
+        // the width would no longer be the width on screen, and the two bars would differ by 32 vp
+        // for a reason nobody could see in either number.
+        //
+        // And not an inset through the title bar's own padding: `NavigationTitleOptions.paddingStart`/
+        // `paddingEnd` (`navigation.d.ts:1791`, `:1814`) are inert for this bar — they act on the
+        // framework's title row, and a custom `builder` with `hideBackButton(true)` has no such row.
+        .width(FLOATING_BAR_WIDTH)
         .height(TOP_BAR_CAPSULE_HEIGHT)
         .justifyContent(FlexAlign.Center)
-        // The horizontal inset is the capsule's own `margin` and nothing else.
-        // `NavigationTitleOptions.paddingStart`/`paddingEnd` (`navigation.d.ts:1791`, `:1814`)
-        // are inert for this bar: they act on the framework's title row, and a custom `builder`
-        // with `hideBackButton(true)` has no such row. `FLOATING_BAR_SIDE_MARGIN` is the shell's
-        // own floating-bar side margin, so the two bars line up on the same pair of edges.
-        .margin({ left: FLOATING_BAR_SIDE_MARGIN, right: FLOATING_BAR_SIDE_MARGIN })
         // Load-bearing, not cosmetic — see `TOP_BAR_CAPSULE_RADIUS`.
         .borderRadius(TOP_BAR_CAPSULE_RADIUS)
         .systemMaterial(this.topBarMaterialObject)
@@ -2460,10 +2663,11 @@ export struct ReaderView {
         Column() {
           this.topBarRow()
         }
-        .width('100%')
+        // The same width as the material branch, and for the same reason: what degrades on a
+        // pre-26 device is the surface, not the geometry.
+        .width(FLOATING_BAR_WIDTH)
         .height(TOP_BAR_CAPSULE_HEIGHT)
         .justifyContent(FlexAlign.Center)
-        .margin({ left: FLOATING_BAR_SIDE_MARGIN, right: FLOATING_BAR_SIDE_MARGIN })
         .borderRadius(TOP_BAR_CAPSULE_RADIUS)
         // No `Color.Transparent` on this branch, and that is the whole difference between the
         // two: this one **is** the surface. An API-24 device gets the requested capsule with an
@@ -2474,6 +2678,10 @@ export struct ReaderView {
     .width('100%')
     .height('100%')
     .justifyContent(FlexAlign.Center)
+    // Explicit rather than inherited: this column is what centres a capsule that is now **narrower
+    // than the bar** (`FLOATING_BAR_WIDTH` instead of the full width), so the alignment is load
+    // bearing in a way it was not when the capsule filled the space by itself.
+    .alignItems(HorizontalAlign.Center)
   }
 
   /**
@@ -2709,12 +2917,29 @@ export struct ReaderView {
    *    box's **bottom**, so the capsule does not move by one pixel when this number changes.
    *    Nothing else in the box is painted, so the extra height is invisible.
    *
+   * **Since r102 the height is `bottomBarBoxHeight()`, not the constant**: the capsule is lifted
+   * by the gesture bar's inset so it clears the system navigation bar (「底栏要稍微上移一点，
+   * 避让系统导航条」), which is that many vp of extra painted content *inside* the box — the gradient
+   * mask still has to reach the screen's bottom edge. So the box grows by exactly the inset, and
+   * that is the one place this change costs a vp of page: see `bottomBarBoxHeight`.
+   *
    * It is **not** the whole page, because `Tabs` is a swipeable container: at full height its
    * content region would take the reader's page-turn swipes away from the kit. The cost is stated
    * rather than hidden: **while the bars are shown**, a tap inside the box belongs to the bar and
    * does not turn a page. While they are hidden the bar is `Visibility.None`, which is not
    * hit-testable, so the band behaves as if the bar were not there — and hidden is the default.
-   * Growing the box from 96 to 120 vp widens that band by 24 vp, and only while the bars are up.
+   * Growing the box from 96 to 120 vp widened that band by 24 vp; the gesture inset widens it by
+   * the inset again (27.9 vp on the reference device, so 120 → 148 vp). Both increments cost
+   * nothing while the bars are down.
+   *
+   * ## Why the bar's width is stated rather than left to HDS
+   *
+   * `barFloatingStyle.barWidth` is pinned to `FLOATING_BAR_WIDTH` on all three breakpoint tiers,
+   * and the top bar's capsule is pinned to the same constant. HDS's own default for a four-cell
+   * floating bar *is* that number (设计规范 · HdsTabs · `barWidth`: 「页签个数大于等于4时，页签栏
+   * 最大宽度不超过328vp」), so this states the value instead of recomputing it — and it is what makes
+   * "the two bars are the same width" a property of the code rather than of two independent
+   * layouts that happen to agree on this screen.
    */
   @Builder
   private bottomBar() {
@@ -2722,7 +2947,7 @@ export struct ReaderView {
       this.bottomBarEntries()
     }
     .width('100%')
-    .height(BOTTOM_BAR_BOX_HEIGHT)
+    .height(this.bottomBarBoxHeight())
     .barMode(BarMode.Fixed)
     .barOverlap(true)
     .vertical(false)
@@ -2730,7 +2955,17 @@ export struct ReaderView {
       // Unit-bearing **strings**, not numbers: HDS silently drops a bare number here
       // (`ParseProp failed parse property barSideMargin`), a trap this project has hit.
       barSideMargin: `${FLOATING_BAR_SIDE_MARGIN}vp`,
-      barBottomMargin: `${FLOATING_BAR_BOTTOM_MARGIN}vp`,
+      // The same unit-bearing rule, and the value is the design's margin **plus the live gesture
+      // bar**: `barBottomMargin` is the capsule's distance from the box's bottom edge, which is
+      // the screen's bottom edge, so clearing a 27.9 vp navigation bar means adding 27.9 vp here.
+      barBottomMargin: `${this.bottomBarMarginVp()}vp`,
+      // One width for both of the reader's bars. All three tiers are set so the width does not
+      // move with the breakpoint — see this builder's note and `FLOATING_BAR_WIDTH`.
+      barWidth: {
+        smallWidth: `${FLOATING_BAR_WIDTH}vp`,
+        mediumWidth: `${FLOATING_BAR_WIDTH}vp`,
+        largeWidth: `${FLOATING_BAR_WIDTH}vp`,
+      },
       gradientMask: {
         maskColor: this.pageBackground(),
         maskHeight: FLOATING_BAR_MASK_HEIGHT,
