@@ -287,7 +287,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  *    move from `false` to `true` with the baseline above. Left at `false` it would hide the shell's
  *    status bar the moment a book was closed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-14 r107 (shell-status-bar-and-insets)';
+export const BUILD_STAMP: string = 'build 2026-10-15 r109 (grid-content-end-offset)';
 
 /**
  * A byte count as something a person can read.
@@ -2311,9 +2311,11 @@ struct Index {
         showBookmarks: this.showBookmarks,
         showHighlights: this.showHighlights,
         showNotes: this.showNotes,
-        // The same inset the shelf gets, for the same reason: this list is drawn under the
-        // floating tab bar, which now sits one gesture bar higher than it used to.
-        bottomInsetVp: this.shellBottomInsetVp,
+        // No inset is handed to this list, and that is deliberate (r109). A `List` clips at
+        // `ContentClipMode.CONTENT_ONLY`, so its padding band is never drawn: it needs only the bare
+        // clearance, and it can neither pop a row into view nor hide one inside the fade. The shelf's
+        // `Grid` is the one tab content under this bar that does take the shell's gesture inset, and
+        // it reserves it through `contentEndOffset` rather than through padding.
         onReload: (): Promise<void> => this.reloadAnnotations(),
         onDeleteBookmark: (item: AnnotationItem): Promise<void> => this.deleteAnnotation(item),
         onDeleteHighlight: (item: AnnotationItem): Promise<void> => this.deleteAnnotation(item),
@@ -3452,13 +3454,17 @@ struct Index {
    * under the bar and cannot be reached — the same class of defect as the nested
    * `Scroll` fixed in this file, and one that also only shows up under a finger.
    *
-   * **Since r107 that padding is the clearance plus the gesture inset** — the capsule is lifted and
-   * the gradient mask above it moves with the capsule, so a bare 96 would leave a list's last row
-   * inside the fade. The two tab owners that actually sit under this bar — `ShelfPage` and
-   * `AnnotationsPage` — are handed `shellBottomInsetVp` and compose the value themselves, so each
-   * one still names the shared constant. `syncSection` deliberately keeps the bare constant: it
-   * lives in a pushed `NavDestination`, which covers this bar entirely, so there is no lifted
-   * capsule under it to clear.
+   * **r107 widened the reserved distance to clear the gesture bar, and r109 narrowed that back to
+   * one tab content.** The r107 premise — that lifting the capsule lifts the gradient mask *above*
+   * it — is contradicted by measurement on the reference device: the mask renders as the bottom
+   * 32 vp of the tab area (`Stack [0,2740][1320,2848]`), i.e. **below** the capsule, and it did not
+   * move when `barBottomMargin` went 8 -> 36. So the inset is not handed to a page merely for being
+   * scrollable under this bar. `ShelfPage` is the one that takes it, and for a reason of its own:
+   * its `Grid` reserves the distance through `contentEndOffset`, because a `Grid` with a bottom
+   * *padding* refuses to draw a child that begins inside that band at all. `AnnotationsPage` needs
+   * nothing: a `List` clips at `ContentClipMode.CONTENT_ONLY`, so its padding band is never drawn.
+   * `syncSection` deliberately keeps the bare constant: it lives in a pushed `NavDestination`,
+   * which covers this bar entirely, so there is no lifted capsule under it to clear.
    */
   @Builder
   private shellTabs() {
@@ -3485,6 +3491,18 @@ struct Index {
       // disorienting. See `tabSwitchDuration` and `TAB_SWITCH_DURATION_MS`.
       .animationDuration(this.tabSwitchDuration())
       .barFloatingStyle({
+        // **The width is deliberately not set here** — there is no `barWidth` key in this object, and
+        // `verify-objective-coverage` asserts exactly that ("the bar width is not hard-coded"). r102
+        // left the width to HDS's own per-breakpoint calculation, because the design spec says HDS
+        // computes it and replacing that with a number read off a table would be the worse guess.
+        //
+        // The visible consequence is accepted rather than a defect: this bar carries three cells, so
+        // HDS gives it `76 x 3 + 8` = 236 vp, while the reader's four-cell bar is pinned to 328 vp.
+        // The r109 investigation measured 797 px = 236.2 vp here and looked for the pin that was
+        // "being ignored" — there never was one on this side. The HDS reference does make the value
+        // overridable at any tab count (its `76vp x n + 8vp` formula is published under **默认值**
+        // only), so adding the pin is possible; it is simply a design change, and that assertion is
+        // what would have to be reversed along with it.
         barSideMargin: `${FLOATING_BAR_SIDE_MARGIN}vp`,
         // **Unit-bearing, and composed.** The user asked for the shell's bottom bar to clear the
         // system navigation bar (「主界面的底栏也要避开导航条」), which on this device is the 28 vp

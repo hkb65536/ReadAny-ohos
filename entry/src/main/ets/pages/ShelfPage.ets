@@ -101,13 +101,21 @@ export struct ShelfPage {
   /**
    * The gesture navigation bar's height in vp, handed down by the shell.
    *
-   * The floating tab bar floats **over** this grid, and since r107 it clears the gesture bar by
-   * adding this inset to `FLOATING_BAR_BOTTOM_MARGIN`. The bar's gradient mask moves up with it, so
-   * the grid's own bottom padding has to grow by the same amount or the last row of a full shelf
-   * would be drawn inside the fade. The shell is the only place that reads the window
-   * (`Index.resolveShellInsets`); this page composes the number it is given with the design
-   * clearance rather than looking anything up. 0 is the r106 geometry, which is why it is the
-   * default.
+   * The floating tab bar floats **over** this grid, and the grid reserves the bar's painted box at the
+   * end of its scroll range: `FLOATING_BAR_CLEARANCE` **plus this inset**, unchanged since r107. The
+   * shell is the only place that reads the window (`Index.resolveShellInsets`); this page composes the
+   * number it is given with the design clearance rather than looking anything up. 0 is the r106
+   * geometry, which is why it is the default.
+   *
+   * **r109 moved that value, and did not re-derive it.** r107 justified the inset by saying the bar's
+   * gradient mask moved up with the capsule; the device contradicts that (the mask is the bottom
+   * 32 vp of the tab area — below the capsule — and did not move when `barBottomMargin` went 8 -> 36),
+   * so the justification recorded here is deliberately not that one. The value is kept because it is
+   * the reserved distance r107 was measured with, and because the fix this round was to move the term
+   * out of `padding` (a `Grid` will not draw a child that begins inside a padding band) and into
+   * `contentEndOffset`, where the same distance costs nothing visually. `AnnotationsPage`'s copy of
+   * this inset was reverted, because a `List` clips at `ContentClipMode.CONTENT_ONLY` and never
+   * needed it — see that file.
    */
   @Prop bottomInsetVp: number = 0;
   /** Search text, applied to title and author by the repository query. */
@@ -875,21 +883,44 @@ export struct ShelfPage {
         .rowsGap(16)
         .width('100%')
         .layoutWeight(1)
-        // Bottom padding clears the floating tab bar, which overlaps the content. Only
-        // 16 before, so the last row of a full shelf sat underneath the capsule and
-        // could not be tapped. The horizontal half is `SHELF_GRID_PADDING`, which the
-        // action menu's width is derived from (`cardWidth`), so it is named rather than
-        // written twice.
+        // Horizontal padding only. It is `SHELF_GRID_PADDING`, the value the action menu's width is
+        // derived from (`cardWidth`), so it is named rather than written twice.
         //
-        // Since r107 the vertical half is the clearance **plus the gesture inset**: the capsule was
-        // lifted to clear the navigation bar, and the gradient mask above it was lifted with it, so
-        // a bare 96 would leave the last row inside the fade. Only the bottom term changed — the
-        // horizontal padding is still the one `cardWidth` measures against.
-        .padding({
-          left: SHELF_GRID_PADDING,
-          right: SHELF_GRID_PADDING,
-          bottom: FLOATING_BAR_CLEARANCE + this.bottomInsetVp,
-        })
+        // r109: the **bottom** term moved out of `padding` and into `contentEndOffset` below.
+        // A `Grid` whose child sits *entirely* inside the padding band does not draw that child at
+        // all — ArkUI, `Grid`: 「设置Grid的padding后，如果子组件部分位于Grid内容区且部分位于padding
+        // 区域内，则会显示；如果子组件完全位于padding区域内，则不会显示。」 So a bottom-padded
+        // `Grid` carries a **no-item-may-begin** strip at its end, and a row crossing into that strip
+        // was admitted *whole and in one frame*, filling the strip at full height. That was the 书架
+        // pop: cell, cover, title and progress arriving together, with no hysteresis.
+        // `contentEndOffset` reserves the same distance without declaring any padding, so the rule
+        // above cannot apply by its own terms. `clip` is untouched — still the border box — so
+        // content goes on sliding under the capsule and its mask, which is the intended look.
+        .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING })
+        // `contentEndOffset(offset: number | Resource)`: `common.d.ts:25382`, `@since 22`, unit vp,
+        // default 0. `GridAttribute extends ScrollableCommonMethod<GridAttribute>` (`grid.d.ts:338`)
+        // is what puts it on `Grid`; `scroll.d.ts:492-493`: 「Starting from API version 22, the Grid
+        // and WaterFlow components also support setting contentStartOffset and contentEndOffset.」
+        // The contract is this project's invariant exactly: 「设置内容区末尾偏移量。滚动组件滚动到末尾
+        // 位置时，内容与组件显示区域边界保留指定距离。」 The reserved distance is deliberately
+        // **unchanged from r107** — this round moved the term, it did not re-derive it. Both mechanisms
+        // shorten the scrollable end by the same 418.5 px on the reference device, so max scroll
+        // (856.5 px) and the last row's resting position (2429.5 px) are identical to the padded
+        // version; only the *mechanism* changed. Whether the gesture inset inside that value is still
+        // load-bearing is **not** something this round re-measured, so it was left alone.
+        //
+        // `@since 22` <= this module's `compatibleSdkVersion` of 24, so there is **no** runtime guard
+        // here — unlike the reader's `uiMaterial.ImmersiveMaterial` (@26), which does need one. A
+        // version check on this line would be dead code.
+        //
+        // One degenerate case is documented and is deliberately **not** clamped: 「contentStartOffset
+        // + contentEndOffset超过滚动组件内容区长度后contentStartOffset和contentEndOffset会置0」.
+        // No `contentStartOffset` is set, so the clearance would need this Grid's content area to be
+        // shorter than 124 vp. The Grid is `layoutWeight(1)` under a `height('100%')` section, so it
+        // is screen height minus the title and chrome — and it cannot reach 124 vp without the page
+        // being unusable well before that. A clamp would be unreachable code guarding an impossible
+        // state, so the bound is recorded here instead of written as a branch.
+        .contentEndOffset(FLOATING_BAR_CLEARANCE + this.bottomInsetVp)
         .scrollBar(BarState.Auto)
         // Gated like the other scroll owners, so switching animation off also stops the
         // shelf stretching past its last row and springing back.

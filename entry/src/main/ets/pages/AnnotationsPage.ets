@@ -39,16 +39,6 @@ export struct AnnotationsPage {
    * strips showed.
    */
   @Prop palette: ThemePalette;
-  /**
-   * The gesture navigation bar's height in vp, handed down by the shell.
-   *
-   * The floating tab bar is drawn over this list, and since r107 it clears the gesture bar by that
-   * inset — with its gradient mask moving up by the same amount. The list therefore reserves
-   * `FLOATING_BAR_CLEARANCE` plus this, or its last row would sit inside the fade. Read once in
-   * `Index.resolveShellInsets`; this page only composes the number it is given. 0 is the r106
-   * geometry, hence the default.
-   */
-  @Prop bottomInsetVp: number = 0;
   /** Which annotation types to show. */
   @Link showBookmarks: boolean;
   @Link showHighlights: boolean;
@@ -369,10 +359,25 @@ export struct AnnotationsPage {
         // Clears the floating bottom tab bar, which overlaps the content. At 16 the
         // last annotation sat under the capsule and could not be tapped.
         //
-        // Since r107 the capsule is lifted by the gesture inset and the gradient mask above it goes
-        // with it, so the clearance grows by the same amount — otherwise the last row would be drawn
-        // inside the fade.
-        .padding({ left: 16, right: 16, bottom: FLOATING_BAR_CLEARANCE + this.bottomInsetVp })
+        // **r109 reverted this from `FLOATING_BAR_CLEARANCE + bottomInsetVp` back to the bare
+        // constant.** r107 added that inset on a premise this device contradicts: it held that
+        // lifting the capsule lifted the gradient mask with it, so a bare 96 would leave the last row
+        // inside the fade. Measured: the mask is the bottom 32 vp of the tab area
+        // (`Stack [0,2740][1320,2848]`) — **below** the capsule, not above it — and it did not move
+        // when `barBottomMargin` went 8 -> 36. The bar's painted extent is 92.1 vp, so 96 already
+        // over-reserved by ~4 vp and 124 over-reserved by ~32. The only measured effect of the
+        // 96 -> 124 change was to move the invisible line up 94.5 px and grow the pop band from
+        // 324 px to 418.5 px, about 44% worse.
+        //
+        // This list also **never had the defect the inset was meant to prevent**. `List` and
+        // `WaterFlow` default to `ContentClipMode.CONTENT_ONLY`, while `Grid` and `Scroll` default to
+        // `BOUNDARY` (ts-container-scrollable-common: 「默认值：Grid、Scroll的默认值为
+        // ContentClipMode.BOUNDARY，List、WaterFlow的默认值为ContentClipMode.CONTENT_ONLY」), and the
+        // waterflow reference states the consequence verbatim: 「内容裁剪模式为ContentClipMode.
+        // CONTENT_ONLY，padding区域会被裁剪不显示」. A `List`'s padding band is **clipped away**, so no
+        // admission rule can make a row pop there — and there was never a slide-under look to protect
+        // either. That is exactly why this row needs no inset while the shelf's `Grid` does.
+        .padding({ left: 16, right: 16, bottom: FLOATING_BAR_CLEARANCE })
         .scrollBar(BarState.Auto)
         // Gated like every other scroll owner: off means the list stops at its last row
         // instead of stretching and springing back.
