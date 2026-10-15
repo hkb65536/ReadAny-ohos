@@ -337,7 +337,7 @@ const READER_ENTRY_DAMPING: number = 0.9;
  */
 const READER_ENTRY_DURATION_MS: number = 400;
 
-export const BUILD_STAMP: string = 'build 2026-10-15 r110 (reader-entry-slide)';
+export const BUILD_STAMP: string = 'build 2026-10-15 r111 (reader-loading-cover)';
 
 /**
  * A byte count as something a person can read.

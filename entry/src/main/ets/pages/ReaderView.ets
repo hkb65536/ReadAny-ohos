@@ -4177,15 +4177,50 @@ export struct ReaderView {
               .height('100%')
 
             if (this.loading) {
+              // --- the cover (r111), and the black frame it removes ----------------------
+              //
+              // **Reader Kit's own panel paints an opaque pure-black surface until it has a
+              // page, and that panel is the whole screen.** The kit's page box is the entire
+              // height it was handed — r106 measured its own `drawAnim` offset as the full
+              // screen height — so while it is parsing there is no part of this screen's theme
+              // left visible behind it. Measured on the device over seven consecutive opens:
+              // **every one produced exactly one frame of pure black** (rgb 0,0,0, covering
+              // 99.7 % of the frame at two to four distinct colours) between the shelf and the
+              // first painted page.
+              //
+              // It is **not** a theme colour that fell through, and not the dark page: the dark
+              // palette's page is rgb 18,18,18 and this measures 0,0,0 on every channel. It is
+              // not the window either — in one of those opens the frame *before* the black was
+              // the themed page tone and nothing else (22 distinct colours), so the backdrop
+              // paints correctly and the black replaces it one frame later.
+              //
+              // So the loading state carries the page colour. This overlay is a **later sibling
+              // of the kit panel inside the page layer**, so it paints above the kit's surface —
+              // which is also why the spinner is visible on the black today — and
+              // `pageBackground()` is the tone the settled page paints, so coming out of this
+              // state is a change of ink rather than of surface.
+              //
+              // **A `backgroundColor` and nothing else.** It moves no geometry, and it is
+              // deliberately *not* on the page layer, whose measured box stays `.width('100%')`
+              // + `.height('100%')` + `.onAreaChange` exactly.
               Column({ space: 10 }) {
                 LoadingProgress().width(32).height(32)
+                // **The caption's tone comes from the app theme, not from the system
+                // (r111).** It was `sys.color.font_secondary`, which follows the *system*
+                // light/dark setting rather than this app's palette. In the light theme that is
+                // a dark tone, which is why the black frame showed the spinner and no
+                // `正在排版...` beside it: a mid-grey ring whose brightest pixel measures 124 of
+                // 255 stays visible on black, while dark text on black does not. On the cover
+                // above, the page's own muted tone measures 7.29:1 light, 8.74:1 dark and
+                // 4.67:1 sepia, so it cannot disappear this way again.
                 Text('正在排版...')
                   .fontSize(13)
-                  .fontColor($r('sys.color.font_secondary'))
+                  .fontColor(this.chromeMuted())
               }
               .width('100%')
               .height('100%')
               .justifyContent(FlexAlign.Center)
+              .backgroundColor(this.pageBackground())
             }
           }
         }
