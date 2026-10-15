@@ -61,6 +61,20 @@ const TAG: string = 'InkBoatReader';
 const TOAST_VISIBLE_MS: number = 2200;
 
 /**
+ * Fail-open bound on the loading cover, in milliseconds (r112).
+ *
+ * The cover is held until the kit reports its first page (see `firstPageShown`). `pageShow`
+ * is documented to fire for every page *including the first*, and `handlePageShow` already
+ * depends on that for the chapter name and the page offset — but "the cover never lifts" is a
+ * reader that cannot be read at all, which is a far worse failure than the one frame of black
+ * the cover exists to hide. So the wait is bounded: if no page arrives within this window the
+ * cover lifts anyway and the kit's own surface is what the user sees. Sized well above every
+ * `startPlay`-to-first-`drawAnim` gap measured on the device (127 ms warm, 329 ms cold) so it
+ * cannot fire on a healthy open.
+ */
+const FIRST_PAGE_GRACE_MS: number = 1200;
+
+/**
  * `PageDataInfo.pageOffset` before the kit has reported a page.
  *
  * Also the kit's own sentinel for "the page before this resource's first page": on the
@@ -595,6 +609,33 @@ export struct ReaderView {
 
   @State private loading: boolean = true;
   /**
+   * **Whether the kit has actually put a page on screen yet (r112).**
+   *
+   * This is the black frame's real cause, and it is *not* a colour problem. r111 gave the
+   * loading cover a `backgroundColor` on the theory that the kit's own panel paints an opaque
+   * black surface for the whole `loading` window. The device says otherwise: the kit's surface
+   * does **not** cover the cover. What happens is a one-frame hole at the *end* of that window.
+   * `loading` drops as soon as `await startPlay` resolves — measured on the device, that is one
+   * frame **before** the kit has composited the page it just laid out:
+   *
+   *   - the frame before the hole is the cover, with its spinner and `正在排版...` on the page
+   *     tone (r01 `f002`, the first frame the burst recorded after the kit created its surface);
+   *   - the hole itself measures **99.7 % pure black with no ink at all in the centre** — no
+   *     spinner, no caption (r01 `f003`) — because the cover has been removed and the kit's
+   *     surface has nothing in it yet;
+   *   - the frame after it is the fully painted page (r01 `f004`).
+   *
+   * So the fix is not to paint the cover differently, it is to **stop taking the cover down
+   * before there is something to look at**. Held until this flag, the hole is behind an opaque
+   * themed surface instead of being the only thing on screen.
+   *
+   * A separate flag, deliberately: `loading` keeps its own meaning everywhere else — the four
+   * `if (this.loading) { return; }` entry guards and the sheet's gates read it exactly as
+   * before, so the interaction gate still opens when it always did and the cover is the only
+   * thing that lasts longer. See `FIRST_PAGE_GRACE_MS` for the bound on that extra time.
+   */
+  @State private firstPageShown: boolean = false;
+  /**
    * Effective reader settings, held locally.
    *
    * **Typography and the reader's own two choices — no colours.** Appearance comes from
@@ -919,6 +960,14 @@ export struct ReaderView {
   @State private toastText: string = '';
   /** Pending auto-hide timer for `toastText`; -1 when none is scheduled. */
   private flashTimer: number = -1;
+  /**
+   * Pending fail-open timer for the loading cover; -1 when none is scheduled.
+   *
+   * Armed when `loading` drops and cleared by the first page. It exists only so that a missing
+   * `pageShow` degrades to "one frame of black", which is the bug, instead of to "a reader that
+   * never opens", which would be much worse. See `FIRST_PAGE_GRACE_MS`.
+   */
+  private coverGraceTimer: number = -1;
 
   aboutToAppear(): void {
     this.settingsApplied = false;
@@ -982,6 +1031,12 @@ export struct ReaderView {
     if (this.flashTimer !== -1) {
       clearTimeout(this.flashTimer);
       this.flashTimer = -1;
+    }
+    // Same reason, and the same class of bug if it is missed: the cover's fail-open timer
+    // would fire after this component is gone (r112).
+    if (this.coverGraceTimer !== -1) {
+      clearTimeout(this.coverGraceTimer);
+      this.coverGraceTimer = -1;
     }
     // Releasing matters: the kit holds the parsed book and its fonts, and leaking
     // it would keep the file locked and the memory allocated for the next book too.
@@ -1138,6 +1193,24 @@ export struct ReaderView {
       }
       this.callbacks.onReady(chapters);
       this.loading = false;
+      // **The cover outlives `loading` (r112).** `loading` still drops here, so the four
+      // `if (this.loading) { return; }` entry guards open exactly when they always did; what
+      // changes is that the cover, which was gated on `loading`, now also waits for the kit's
+      // first page. Between this line and that page there is exactly one frame in which the kit
+      // panel is blank, and it used to be the black frame.
+      //
+      // The log is the measurement, not decoration: this single line and `reader first page`
+      // below bracket the hole, and the frame burst is timestamped on the same clock, so the
+      // black frame can be placed on one side or the other of it. See `firstPageShown`.
+      this.coverGraceTimer = setTimeout((): void => {
+        this.coverGraceTimer = -1;
+        // Fail open, loudly: this line firing means `pageShow` did not arrive.
+        hilog.warn(DOMAIN, TAG,
+          'reader cover: no first page within %{public}dms, lifting anyway', FIRST_PAGE_GRACE_MS);
+        this.firstPageShown = true;
+      }, FIRST_PAGE_GRACE_MS);
+      hilog.info(DOMAIN, TAG,
+        'reader cover: startPlay resolved, cover held until the first page');
     } catch (err) {
       // A failure here is fatal for this screen; the shell shows the message and
       // the user can back out.
@@ -1413,6 +1486,14 @@ export struct ReaderView {
   private fail(message: string): void {
     this.errorText = message;
     this.loading = false;
+    // There is no page coming, so the cover must not wait for one (r112): the failure text is
+    // drawn *instead of* the kit panel, and a cover held over it would hide the only thing that
+    // tells the user what went wrong. `!this.firstPageShown` is false from here on.
+    this.firstPageShown = true;
+    if (this.coverGraceTimer !== -1) {
+      clearTimeout(this.coverGraceTimer);
+      this.coverGraceTimer = -1;
+    }
     this.callbacks.onOpenFailed(message);
   }
 
@@ -1431,6 +1512,22 @@ export struct ReaderView {
     }
     if (info.state !== readerCore.PageState.PAGE_ON_SHOW) {
       return;
+    }
+
+    // **The first page is the cover's release (r112).** `pageShow` fires for every page
+    // including the first — this handler already depends on that for the chapter name and the
+    // page offset — so the first `PAGE_ON_SHOW` is exactly "there is now something to look at".
+    // Only the first one is logged and only the first one clears the timer; the flag is written
+    // once by construction, which is what keeps the cover a one-way latch.
+    if (!this.firstPageShown) {
+      this.firstPageShown = true;
+      if (this.coverGraceTimer !== -1) {
+        clearTimeout(this.coverGraceTimer);
+        this.coverGraceTimer = -1;
+      }
+      // Pairs with `reader cover: startPlay resolved` above; the gap between the two is the
+      // window the black frame lived in.
+      hilog.info(DOMAIN, TAG, 'reader cover: first page shown, cover lifted');
     }
 
     this.chapterTitle = this.resolveChapterTitle(info.resourceIndex, info.pageHeaderContent);
@@ -4175,44 +4272,61 @@ export struct ReaderView {
             })
               .width('100%')
               .height('100%')
+              // **The panel's own backdrop (r112).** A background under a self-drawing component
+              // is what shows wherever that component's content is transparent, and a surface
+              // that has been created but has nothing in it yet is exactly that case. The kit's
+              // renderer maps the same hole to black — an EGL surface is cleared to black on
+              // creation, which is why the hole measures `rgb(0,0,0)` and not the dark palette's
+              // `rgb(18,18,18)` — so painting the page tone here is the second line of defence
+              // behind the cover. It is a background on the panel, **not** on the page layer: the
+              // measured box keeps `.width('100%')` + `.height('100%')` + `.onAreaChange`
+              // exactly, so the box the kit paginated against cannot move.
+              .backgroundColor(this.pageBackground())
 
-            if (this.loading) {
-              // --- the cover (r111), and the black frame it removes ----------------------
+            if (this.loading || !this.firstPageShown) {
+              // --- the cover: what it is for, and what r111 got wrong about it -----------
               //
-              // **Reader Kit's own panel paints an opaque pure-black surface until it has a
-              // page, and that panel is the whole screen.** The kit's page box is the entire
-              // height it was handed — r106 measured its own `drawAnim` offset as the full
-              // screen height — so while it is parsing there is no part of this screen's theme
-              // left visible behind it. Measured on the device over seven consecutive opens:
-              // **every one produced exactly one frame of pure black** (rgb 0,0,0, covering
-              // 99.7 % of the frame at two to four distinct colours) between the shelf and the
-              // first painted page.
+              // **This cover works. The black frame was never behind it.** r111 read the black as
+              // "the kit's panel paints an opaque black surface until it has a page, for the whole
+              // `loading` window" and gave the cover a `backgroundColor` to hide it. The device
+              // disproves that reading frame by frame. Sixteen cold opens of one book, each with a
+              // burst capture on the same clock as `hilog`:
               //
-              // It is **not** a theme colour that fell through, and not the dark page: the dark
-              // palette's page is rgb 18,18,18 and this measures 0,0,0 on every channel. It is
-              // not the window either — in one of those opens the frame *before* the black was
-              // the themed page tone and nothing else (22 distinct colours), so the backdrop
-              // paints correctly and the black replaces it one frame later.
+              //   - The cover **is** painted, and painted *over* the kit's surface: one captured
+              //     frame — the first the burst recorded after the kit created that surface —
+              //     shows the spinner and `正在排版...` on the page tone. So a plain ArkUI `Column`
+              //     does paint above the kit panel: r111's premise was right and its conclusion
+              //     was wrong.
+              //   - The hole is **one frame wide**, not a window: of 128 captured frames exactly
+              //     one is black, and it sits immediately before the first painted page. At the
+              //     ~330 ms `snapshot_display` floor, a hole that wide is caught once in sixteen
+              //     opens — which is why r111's "12/12" could not have been this frame.
+              //   - That one frame measures **99.7 % pure black with no ink at all in the centre**
+              //     (no spinner, no caption), while the frame before it has both. Nothing themed
+              //     is being *covered*; the cover is simply **already gone**.
               //
-              // So the loading state carries the page colour. This overlay is a **later sibling
-              // of the kit panel inside the page layer**, so it paints above the kit's surface —
-              // which is also why the spinner is visible on the black today — and
-              // `pageBackground()` is the tone the settled page paints, so coming out of this
-              // state is a change of ink rather than of surface.
+              // Its cause is a timing hole in `initialize()`: `loading` drops as soon as
+              // `await startPlay` resolves, one frame before the kit composites the page it just
+              // laid out. Between the two there is a frame with the cover removed and the kit's
+              // surface still empty. See `firstPageShown` — the fix is to stop taking the cover
+              // down before there is something to look at, **not** to change its colour.
               //
-              // **A `backgroundColor` and nothing else.** It moves no geometry, and it is
-              // deliberately *not* on the page layer, whose measured box stays `.width('100%')`
-              // + `.height('100%')` + `.onAreaChange` exactly.
+              // The colour work r111 did is kept because it is still true and still worth having:
+              // the cover carries the page tone, and the caption takes its tone from the app theme
+              // rather than from the system (see below). It is the *condition* that changed.
               Column({ space: 10 }) {
                 LoadingProgress().width(32).height(32)
                 // **The caption's tone comes from the app theme, not from the system
                 // (r111).** It was `sys.color.font_secondary`, which follows the *system*
-                // light/dark setting rather than this app's palette. In the light theme that is
-                // a dark tone, which is why the black frame showed the spinner and no
-                // `正在排版...` beside it: a mid-grey ring whose brightest pixel measures 124 of
-                // 255 stays visible on black, while dark text on black does not. On the cover
-                // above, the page's own muted tone measures 7.29:1 light, 8.74:1 dark and
-                // 4.67:1 sepia, so it cannot disappear this way again.
+                // light/dark setting rather than this app's palette — and this app's palette is
+                // the only thing the cover behind the caption is derived from. On the cover the
+                // page's own muted tone measures 7.29:1 light, 8.74:1 dark and 4.67:1 sepia, so
+                // the caption is legible on every theme by construction rather than by luck.
+                //
+                // r111 justified this by saying the black frame showed the spinner and no
+                // caption. **The burst does not support that**: the black frame has no spinner
+                // either (`centreInk` is zero across the whole centre box). The tone is kept on
+                // the contrast argument above, which stands on its own.
                 Text('正在排版...')
                   .fontSize(13)
                   .fontColor(this.chromeMuted())
