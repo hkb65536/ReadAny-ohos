@@ -1,5 +1,5 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { curves, SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 // HDS supplies the floating (悬浮式) bottom tab bar and its 沉浸光感 material. Guarded
 // by a capability check at render time, so a device without it uses native `Tabs`
@@ -286,58 +286,26 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  *  - **The correction:** `ReaderView.aboutToDisappear` restores the app-wide value, so it had to
  *    move from `false` to `true` with the baseline above. Left at `false` it would hide the shell's
  *    status bar the moment a book was closed.
+ *
+ * **r113 deletes r110's entrance outright, and `Index` goes back to having no animation at all.**
+ * The user, after installing r112: 「现在不会黑了，是和主题相同的颜色。我觉得现在可以把滑入去掉了，
+ * 就保留这个和主题同色的加载界面」 — the themed cover alone is what they want; the slide is not.
+ *
+ * So the reader frame carries **no `translate`, no `opacity` and no appear hook**: it is drawn
+ * at its natural position and full opacity on the very first frame, which is also the correct
+ * starting state for the r112 cover (the cover is `ReaderView`'s, in `ReaderView.ets`, and this
+ * round does not touch it). The deferral the entrance needed existed **only** because it had a
+ * "from" state to interpolate out of; with no such state there is nothing to defer, so this file
+ * now contains no animation call at all — asserted rather than left implicit, and asserted against
+ * the code with comments stripped so the prose below cannot satisfy it.
+ *
+ * The reason the entrance could be removed cleanly is that it lived entirely in **this** file —
+ * `ReaderView.ets` was never touched by r110, so nothing about the kit's measured page box, the
+ * cover, the bars or `resolveAvoidInsets` moves with it. **None of the entrance's identifiers are
+ * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
+ * what makes "the feature is gone" checkable rather than merely claimed.
  */
-/**
- * **r110 — the reader's entrance**, recorded here because it is a decision about `Index.build`
- * rather than about the reader.
- *
- * The user: 「现在我想给打开小说也添加一个动画，现在是黑屏加载，我想电击小说的时候阅读区域从
- * 屏幕右边平移进来」 — tapping a book should bring the reading area in from the right edge of the
- * screen instead of showing the black load.
- *
- * **What is behind it, which is the whole question.** `Index.build` draws the reader *instead of*
- * the shell (`this.openBook !== undefined` ⇒ `readerScreen`, else the `Navigation`/`shellTabs`
- * branch), so the shelf is unmounted while a book is open and there is nothing for the reader to
- * slide *over*. What the slide reveals on the right is this file's root `Column` — the themed
- * `paletteFor(this.themeMode).background`. The motion therefore reads as a reveal of the page from
- * the right edge, not as the shelf being pushed away. Keeping the shell mounted underneath would be
- * the only way to get the second reading, and it was declined: see `readerScreen` for why.
- *
- * **Only render properties move.** `translate` and `opacity`, exactly the two the reader's own
- * floating bars use, and for the same reason: `onAreaChange` is documented **not** to fire for
- * `translate`, `offset`, `markAnchor`, `scale` or `transform` (`common.d.ts:20037-20044`), so the
- * kit's page box keeps the size it was paginated to and the text's display range cannot change
- * (「文字的显示范围保持这样不变就行了」). `width`, `height`, `padding`, `margin`, `layoutWeight`
- * and `position` are never touched by this animation.
- */
-const READER_ENTRY_OFFSET: string = '100%';
-
-/**
- * The spring the reader's entrance runs on, and why it is not the bars' pair.
- *
- * The travel is the whole screen width (~391 vp) against the bars' 30 vp, and a spring's overshoot
- * is a *fraction of its travel*: the bars' `springMotion(0.45, 0.85)` overshoots by
- * `exp(-π·0.85/√(1-0.85²)) ≈ 0.63%`, i.e. about 2.5 vp at this distance — a visible sliver of the
- * backdrop at the screen's right edge, which is a different risk from the sub-pixel settle that
- * makes the same damping right for a 30 vp capsule. `0.9` puts the first overshoot at ≈0.15%
- * (≈0.6 vp, under one pixel at 3.375 px/vp) and a slightly longer response carries the larger
- * distance. The curve is still `springMotion`, which is what this project uses for anything that
- * moves; `Motion.ets` reserves the ease for pure fades only.
- */
-const READER_ENTRY_RESPONSE: number = 0.5;
-const READER_ENTRY_DAMPING: number = 0.9;
-
-/**
- * The `duration` handed to `animateTo` for the entrance, in ms.
- *
- * Inert beside the spring above — `AnimateParam.duration` does not take effect when the curve is
- * `springMotion` (「curve配置 springMotion…时，duration不生效」), which is the same note the reader's
- * own `BAR_SLIDE_DURATION_MS` carries. It is passed anyway so the call site has the shape every
- * other `animateTo` in this project has, and so a future change of curve has a number to start from.
- */
-const READER_ENTRY_DURATION_MS: number = 400;
-
-export const BUILD_STAMP: string = 'build 2026-10-15 r112 (reader-first-page-cover)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r113 (remove-reader-entrance)';
 
 /**
  * A byte count as something a person can read.
@@ -575,28 +543,6 @@ struct Index {
    * rather than a component-local one.
    */
   @StorageLink(MOTION_SPEED_INDEX_KEY) private animationSpeedIndex: number = DEFAULT_ANIMATION_SPEED_INDEX;
-  /**
-   * Whether the open reader has finished sliding in from the right edge (r110).
-   *
-   * **False is the "off screen to the right" state**, and it is the *initial* value on purpose: the
-   * reader's first frame is then already at `translate({ x: READER_ENTRY_OFFSET })`, so the slide
-   * has a real "from" frame to interpolate out of. A `@State` rather than a plain field because the
-   * `translate`/`opacity` below are derived from it and the change is what the animation
-   * interpolates.
-   *
-   * `openReader` puts it back to `false` before it hands the book to `build`, so the slide runs once
-   * per **open** rather than once per app run — see `startReaderEntry`, which also records why the
-   * reset belongs to the open and not to the close.
-   */
-  @State private readerEntered: boolean = false;
-  /**
-   * The entrance's deferral timer, `-1` when none is pending.
-   *
-   * The hook is a plain field rather than component state because nothing renders from it; it exists
-   * so `aboutToDisappear` can cancel a pending start instead of letting it fire into a dead
-   * component (the same shape, and the same reason, as `flushTimer`).
-   */
-  private readerEntryTimer: number = -1;
   /**
    * The settings sub-page stack: 主题 and 同步 are pushed `NavDestination`s.
    *
@@ -881,23 +827,6 @@ struct Index {
     // Issued alongside the other two, not after them: the insets decide where the first frame's
     // titles and tab bar go, so the sooner the window answers the shorter the correction is.
     this.resolveShellInsets();
-  }
-
-  /**
-   * Cancel a pending reader entrance when this page goes away.
-   *
-   * The same teardown `EntryAbility` does for its own pending work, and for the same reason: the
-   * entrance is deferred by one timer, so a page that is being destroyed must not leave that timer
-   * holding a reference to it. The flag is reset with the timer, because the reader is unmounted by
-   * then and the next book has to open with an entrance of its own rather than with this one's
-   * end state — see `startReaderEntry`.
-   */
-  aboutToDisappear(): void {
-    if (this.readerEntryTimer !== -1) {
-      clearTimeout(this.readerEntryTimer);
-      this.readerEntryTimer = -1;
-    }
-    this.readerEntered = false;
   }
 
   /**
@@ -1556,18 +1485,6 @@ struct Index {
     // it; clearing it to `''` on an ordinary open is what stops a jump from leaking
     // into the next book opened.
     this.readerLocator = annotationLocator === undefined ? '' : annotationLocator;
-
-    // Back to the "off screen to the right" state **before** the reader is given to `build`, so its
-    // first frame is at `READER_ENTRY_OFFSET` and the entrance has a real "from" frame to
-    // interpolate out of. This is what makes the slide run once per *open* rather than once per app
-    // run: without it the flag would still hold the previous book's `true` and the second book would
-    // simply appear. A pending timer from a still-unfinished previous entrance is cancelled with it,
-    // so two entrances can never be in flight against the same flag.
-    if (this.readerEntryTimer !== -1) {
-      clearTimeout(this.readerEntryTimer);
-      this.readerEntryTimer = -1;
-    }
-    this.readerEntered = false;
 
     this.openBookPath = absolute;
     this.openBook = book;
@@ -3084,29 +3001,6 @@ struct Index {
    * design gives the top bar exactly three elements, and `ReaderView.topBar` draws all
    * three of them: `返回` · chapter title (centred) · page within the chapter. So the
    * reader owns its whole screen and the shell contributes nothing above it.
-   *
-   * **Its entrance is a slide from the right edge, and only `translate`/`opacity` move (r110).**
-   * The user asked for exactly that (「我想电击小说的时候阅读区域从屏幕右边平移进来」). Both
-   * attributes are derived from `readerEntered`, so the boolean is the whole driver — the same shape
-   * `ReaderView`'s two bars use, with no second "am I animating" flag and no `TransitionEffect`.
-   *
-   * **Why not a `transition()` effect.** The framework's own full-screen slide primitive enters
-   * from the **left** edge (`common.d.ts:5342-5359`: "sliding in from the start edge … the left
-   * edge … for left-to-right scripts"), i.e. the opposite direction, and `Motion.pushIn()` — the
-   * vocabulary entry whose doc says "a full-width horizontal slide, for something that replaces the
-   * screen" — is built on it. Entering from the *right* needs a hand-built effect, and the project's
-   * explicit `animateTo` is the mechanism both the user and this file already have a vocabulary for.
-   * (This comment names the primitive in prose only: `verify-motion` forbids a `TransitionEffect`
-   * static member being reached for outside `Motion.ets`, comments included, so that Token is
-   * deliberately not written here.)
-   *
-   * **Why the shell is not kept mounted underneath.** Sliding over the real shelf is the richer
-   * reading of the request, and it was declined deliberately: reaching it means making the shell and
-   * the reader siblings in a `Stack` instead of the mutually exclusive branches they are today, so
-   * the whole shelf subtree — its `Grid`, its `Navigation`, its `onAreaChange` readers and its data
-   * loads — keeps running underneath a window-owning reading screen. The user's acceptance criterion
-   * is 「阅读区域从屏幕右边平移进来」 and their hard constraint is that the text must not be
-   * disturbed, so the contained mechanism was chosen over the richer backdrop.
    */
   @Builder
   private readerScreen(book: Book) {
@@ -3176,77 +3070,13 @@ struct Index {
     // The application theme's page colour, not a reader setting: this is the frame behind
     // `ReaderView`, so it has to be the same colour the reader's own bars paint.
     .backgroundColor(paletteFor(this.themeMode).background)
-    // --- the entrance (r110) ---------------------------------------------------
-    //
-    // Both interpolated properties are **render-time only**, which is what makes this safe for the
-    // kit: `onAreaChange` is documented not to fire for `translate` (`common.d.ts:20037-20044`), so
-    // the page layer keeps the box it was paginated against and the text's display range is
-    // unchanged. `x: READER_ENTRY_OFFSET` is `'100%'` — one full width of *this* box, so the
-    // starting position is derived from the layout rather than from a hard-coded 1320 px, and the
-    // string form is the one `TranslateOptions.x` documents ("For the string type, the value follows
-    // the format of length string type", `common.d.ts:4176-4187`).
-    .translate({ x: this.readerEntered ? 0 : READER_ENTRY_OFFSET })
-    .opacity(this.readerEntered ? 1 : 0)
-    // **`onAppear` is the hook, not `aboutToAppear`.** `common.d.ts:5907` and the
-    // `UIContext.animateTo` reference both state it plainly: 「如果在aboutToAppear中调用动画，自定义组件
-    // 内的build还未执行、内部组件还未创建，动画时机过早，动画属性没有初值，无法对组件产生动画」。 So the
-    // start is deferred to the frame after the component exists. `onAppear` fires once per mount,
-    // and the reader mounts once per book, so this is one entrance per open with no extra state.
-    .onAppear((): void => {
-      this.startReaderEntry();
-    })
-  }
-
-  /**
-   * Start the reader's slide-in from the right edge (r110).
-   *
-   * ## The hook, and why it is `onAppear` plus a deferral
-   *
-   * `aboutToAppear` is documented to be too early — the component's `build` has not run and its
-   * children do not exist, so an `animateTo` there has no initial value to interpolate from
-   * (「动画时机过早，动画属性没有初值」). `onAppear` runs with the tree built, and the reader's first
-   * frame is already off screen because `readerEntered` starts `false`, so the "from" frame is real
-   * and painted. The timer then moves the flip out of the appear callback itself, so the animation
-   * cannot be started in the middle of the frame that is still establishing the node.
-   *
-   * ## The gate: off means snap, never `duration: 0`
-   *
-   * Same rule and same shape as `ReaderView.toggleBars`: when the setting is off, `animateTo` is
-   * **skipped** and the assignment is made directly, outside any animation context, so the reader
-   * appears at its final position rather than tweening there over zero milliseconds.
-   *
-   * ## Why `readerEntered` is cleared by the *open*, not by the close
-   *
-   * The flag is the "has arrived" state of a component that unmounts when the book is closed, so
-   * something has to put it back or the *next* book would open with no entrance at all. `openReader`
-   * does it, immediately before it hands the book to `build` — i.e. at the one moment the reader is
-   * known to be unmounted, so the write cannot be seen on a mounted reader and cannot make the exit
-   * animate. Clearing it from `closeReader` or `aboutToDisappear` instead would be a write to the
-   * entrance state of a component that is already gone, and would leave "who resets this" answered
-   * in two places.
-   */
-  private startReaderEntry(): void {
-    if (this.readerEntryTimer !== -1) {
-      clearTimeout(this.readerEntryTimer);
-    }
-    if (!this.animationOn) {
-      // **"Off" means no tween at all, not a zero-length one** — `animateTo` is skipped rather than
-      // handed `duration: 0`, which would still open an animation context and still run a frame of
-      // interpolation. Identical to the reader's own gate.
-      this.readerEntered = true;
-      this.readerEntryTimer = -1;
-      return;
-    }
-    this.readerEntryTimer = setTimeout((): void => {
-      this.readerEntryTimer = -1;
-      this.getUIContext().animateTo({
-        // Inert beside a spring curve and documented as such — see `READER_ENTRY_DURATION_MS`.
-        duration: READER_ENTRY_DURATION_MS,
-        curve: curves.springMotion(READER_ENTRY_RESPONSE, READER_ENTRY_DAMPING),
-      }, (): void => {
-        this.readerEntered = true;
-      });
-    }, 0);
+    // **No entrance, and no hook for one (r113).** r110 slid this frame in from the right with a
+    // `translate` + `opacity` pair derived from an entrance flag, flipped from the frame's appear
+    // callback because `aboutToAppear` is too early for an `animateTo` to have an initial value.
+    // With the slide gone the frame has no "from" state at all, so there is nothing to defer and
+    // nothing to hook: it is drawn at its natural position and full opacity on the **first** frame,
+    // which is also the state `ReaderView`'s r112 cover needs underneath it. The exact attribute set
+    // below is asserted, so a reappearing `translate`/`opacity`/appear callback fails the suite.
   }
 
   // -------------------------------------------------------------------------
