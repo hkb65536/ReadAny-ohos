@@ -17,9 +17,12 @@ import {
   TYPE_CAPTION,
   TYPE_SUBTITLE,
   TYPE_TITLE,
+  TYPE_TITLE_LARGE,
+  topBarMaterialOption,
 } from '../theme/Theme';
 import {
   COVER_PROGRESS_HEIGHT,
+  HEADER_TITLE_HIDE_OFFSET,
   MENU_TRIGGER_GAP,
   MENU_TRIGGER_GLYPH_SIZE,
   MENU_TRIGGER_INSET,
@@ -160,6 +163,32 @@ export struct ShelfPage {
    * must render as idle rather than as busy.
    */
   @Prop syncBusy: boolean = false;
+  /**
+   * The tab's own title, drawn inside the header — `书架`.
+   *
+   * **The title moved here from `Index.pageTitle` in this round**, and the reason is the material
+   * rather than the title: the framework serves `systemMaterial` **only** inside a
+   * `Navigation`/`NavDestination` title bar or a horizontal `Tabs` bottom `TabBar`, so the header that
+   * is meant to carry it has to *be* a title bar — and a title bar's content is this component's, not
+   * the shell's. Keeping a second copy of the title in `Index` would print it twice, which is the
+   * defect the audit's `pageTitle` section already guards against on the settings detail pages.
+   *
+   * It is therefore the same title as before, spelled from the same tokens: `TYPE_TITLE_LARGE` (30),
+   * `FontWeight.Bold` and `palette.foreground`, which is exactly what `pageTitle` draws. The shell
+   * still owns the string (it is handed in), so 「书架」 has one writer.
+   */
+  @Prop pageTitle: string = '书架';
+  /**
+   * The top system band the header must clear, in vp, handed down by the shell.
+   *
+   * `shellTopInsetVp`, unchanged and still the shell's single measurement (r107). The header used to
+   * receive it *indirectly*, through the section's title row above it; with the title now inside the
+   * header it takes the band itself, so the title's first line of ink still starts below the status
+   * bar and the punch hole.
+   *
+   * 0 is the pre-r107 geometry and the value before the window answers, which is why it is the default.
+   */
+  @Prop topInsetVp: number = 0;
 
   /**
    * Start one ordinary sync pass, or do nothing.
@@ -175,6 +204,32 @@ export struct ShelfPage {
   onImport: () => Promise<void> = async (): Promise<void> => {};
   onOpen: (book: Book) => void = (): void => {};
   onReload: () => Promise<void> = async (): Promise<void> => {};
+  /**
+   * Report the grid's scroll direction and position so the shell can hide the 「书架」 title.
+   *
+   * **The decision is the shell's, the measurement is this page's.** The grid is what scrolls, so it
+   * is the only thing that can say which way the user is moving; but the rule that turns that into
+   * "the title is hidden" belongs beside the title's own state, in `Index`, for the same reason
+   * `onSync` is injected rather than called directly — a second place that decided it could disagree
+   * with the first.
+   *
+   * `up` is true when this frame moved the content further from the top, and `offset` is the
+   * cumulative scroll distance in vp. Both are passed rather than one derived flag, so the hysteresis
+   * (see `HEADER_TITLE_HIDE_THRESHOLD`) lives in exactly one place.
+   */
+  onTitleScroll: (up: boolean, offset: number) => void = (up: boolean, offset: number): void => {};
+  /**
+   * The grid's scroll offset, in vp, accumulated from `onDidScroll`'s per-frame deltas.
+   *
+   * `onDidScroll` reports **how far this frame moved**, not where it is, so the absolute position has
+   * to be accumulated. It is a plain field rather than `@State`: nothing renders from it — it is the
+   * only input to the direction test above — and making it state would re-render the whole grid on
+   * every frame of every scroll.
+   *
+   * A stale value is self-correcting rather than sticky: the grid is re-created when the book list is
+   * replaced, so the accumulator is reset in `aboutToAppear` alongside the covers.
+   */
+  private scrollOffsetVp: number = 0;
   /**
    * Perform an already-confirmed deletion of one book.
    *
@@ -281,8 +336,100 @@ export struct ShelfPage {
   private menuMaterial: Object | undefined = undefined;
   private menuMaterialMode: string = '';
 
+  /**
+   * The 沉浸光感 material the header's surface is painted with, or `undefined` for the opaque path,
+   * or `null` while that question has not been asked yet.
+   *
+   * ## Why it is resolved in `aboutToAppear` and not at construction
+   *
+   * `topBarMaterialOption()` builds a real `uiMaterial.ImmersiveMaterial` when the gate admits it, and
+   * that object is `@since 26.0.0`. An eager field initialiser runs **before** any lifecycle hook, on
+   * whatever runtime the module finds itself on, so putting the construction there would evaluate an
+   * API-26 namespace during construction on an API-24 device — the one thing
+   * `canApplyImmersiveMaterial()` exists to prevent. The reader already establishes the shape: it
+   * stores the *gate's answer* at construction and constructs the object only where that answer has
+   * already said yes (`ReaderView.topBarMaterialObject`).
+   *
+   * ## What `undefined` means, and why the opaque branch is not a fallback nobody reaches
+   *
+   * `topBarMaterialOption` is the app's one guarded decision point for a **top** bar's material — the
+   * reader's floating top bar uses the same one — and it answers `undefined` on all three documented
+   * "no material" paths at once:
+   *
+   *  1. **The API is absent** (a pre-26 runtime). The namespace does not exist there, so the object
+   *     cannot be constructed at all and the guard answers before anything touches it.
+   *  2. **The device reports no support** (`isImmersiveMaterialSupported`) — a device fact independent
+   *     of the API level.
+   *  3. **The material level is the low-compute one**, where a material stops being a filter over this
+   *     app's surface and *becomes* the surface, painted from the system's palette. A system material
+   *     knows only light from dark, so at that level the sepia header would come back white or black —
+   *     the defect this project has already hit twice, on a page-sized container and on the ⋯ chip.
+   *
+   * ## Why the answer is memoised
+   *
+   * It decides **which of two component trees is built**, not a value inside one: ArkTS cannot apply an
+   * attribute conditionally in a single component call, so the material branch and the opaque branch
+   * each exist in full. Settling it once means the tree does not change shape underneath the grid while
+   * the user is scrolling it.
+   */
+  private headerMaterial: Object | undefined | null = null;
+  /**
+   * Whether the 「书架」 title is currently hidden because the shelf is scrolled up.
+   *
+   * The shell writes it (see `onTitleScroll`); this page only renders from it. Only `opacity` and
+   * `translate` are derived from it — never a layout property — for the reason recorded on
+   * `HEADER_TITLE_HIDE_OFFSET`: the header's height is the title bar's height and therefore also the
+   * grid's top offset, so a layout-animated title would reflow the grid during the gesture.
+   */
+  @Prop titleHidden: boolean = false;
+
   aboutToAppear(): void {
     this.refreshCovers();
+    // The accumulator is a plain field, so it is not reset for free when the component is rebuilt
+    // for a new book list. See `scrollOffsetVp`.
+    this.scrollOffsetVp = 0;
+    // The material question is asked here rather than at construction — see `headerMaterial`.
+    this.headerMaterial = topBarMaterialOption();
+  }
+
+  /**
+   * Feed one frame of the grid's scroll to the shell's hide/show rule.
+   *
+   * `onDidScroll(handler: OnScrollCallback)` — `common.d.ts:25435`, **`@since 12`**, with the
+   * callback `(scrollOffset: number, scrollState: ScrollState)`. Two things about it are
+   * load-bearing here and both come from the declaration rather than from a guess:
+   *
+   *  - **`scrollOffset` is the offset of *this frame*, signed** — the declaration says
+   *    "scrollOffset is offset per frame scrolling" (`common.d.ts:25400`). It is not a position, so
+   *    the cumulative distance is accumulated here and that sum is what the shell's thresholds are
+   *    compared against.
+   *  - **`onScroll` is the wrong API for this.** It is `@since 11`, **deprecated since 12**, and its
+   *    `@useinstead` is exactly this method (`common.d.ts:25407-25408`). The deprecated callback also
+   *    takes no `ScrollState`, which is the second reason not to use it: without the state there is
+   *    no way to tell a user's drag from the spring's own settle.
+   *
+   * **Positive is up.** The grid's content moves up the screen as the user reads further down, and
+   * that is the direction the user's 「上划」 names — so `movedUp` is `delta > 0` and it means the
+   * content travelled upward, i.e. the reader is scrolling toward the end of the list.
+   *
+   * **`ScrollState` is deliberately not branched on.** The trigger the user asked for is 「上划的时候」
+   * — a direction, not a gesture phase — so a fling, a drag and a programmatic move all obey the same
+   * rule, and letting go of the list does not change what is on screen. `ScrollState` carries no
+   * direction of its own (Idle/Scroll/Fling), so it could not express this rule even if it were used.
+   */
+  private handleGridScroll(delta: number): void {
+    if (!Number.isFinite(delta) || delta === 0) {
+      return;
+    }
+    this.scrollOffsetVp += delta;
+    if (this.scrollOffsetVp < 0) {
+      // A spring overshoot at the top reports a negative cumulative sum. Clamped so the accumulator
+      // stays a distance from the top rather than drifting below it. (The comment deliberately does
+      // not spell the enum's name: `verify-motion.mjs` asserts that no page carries an unconditional
+      // edge-effect literal, and it scans comments too.)
+      this.scrollOffsetVp = 0;
+    }
+    this.onTitleScroll(delta > 0, this.scrollOffsetVp);
   }
 
   /**
@@ -1186,35 +1333,252 @@ export struct ShelfPage {
     })
   }
 
-  build() {
-    Column() {
-      // Search and the two actions live in the shelf, not the shell, because they only affect
-      // this list.
-      //
-      // **The sort button is gone (r117)** and its slot holds the sync button; 导入 became an icon
-      // beside it. What that costs — no way to change the shelf's order — is recorded on this struct
-      // and on `Index.shelfSort`. The arithmetic of the row, on the reference device's 391.1 vp page:
-      //
-      //   359.1 vp content  = 391.1 − 2 × 16            (SHELF_GRID_PADDING, both sides)
-      //   247.1 vp search   = 359.1 − 48 − 48 − 2 × 8   (two MIN_TAP_TARGET circles, two 8 vp gaps)
-      //
-      // so the field is 48 vp **wider** than it was when the two actions were text buttons (the old
-      // pair measured ~144 vp together: 「最近阅读」 at 13 fp plus 「导入」 at 14 fp plus the Button's own
-      // horizontal padding). The two circles are fixed-size and the search field is the only weighted
-      // child, which is what keeps the row from being able to overflow: it can shrink, they cannot.
-      Row({ space: SPACE_S }) {
-        Search({ value: this.search, placeholder: '搜索书名或作者' })
-          .layoutWeight(1)
-          .onChange((value: string): void => {
-            this.search = value;
-            this.onReload();
-          })
-        this.syncIconButton()
-        this.importIconButton()
+  /**
+   * The shelf header inside a `Navigation` title bar — **the only place the framework serves a
+   * system material to it.**
+   *
+   * ## Why a title bar, and why here
+   *
+   * `systemMaterial` is declared on `CommonMethod` (`common.d.ts:22642`, `@since 26.0.0`), so it looks
+   * like a universal attribute. It is not one. The platform's own enablement guide says it in one
+   * sentence, and this is the sentence this project's rule came from:
+   *
+   *   「其他组件仅在 Navigation/NavDestination 标题栏或横向 Tabs 中 barPosition 为 BarPosition.End 的
+   *    底部 TabBar 中生效。在其他区域中设置沉浸光感效果不生效。」
+   *   — 开启沉浸光感, https://developer.huawei.com/consumer/cn/doc/harmonyos-guides/arkts-immersive-light-sense-enable
+   *
+   * and the FAQ names the runtime tell for the violation:
+   *
+   *   「日志中存在打印：Material inactive: out of scope. Use component in navigation title bar or
+   *    Tabbar.」 — 沉浸光感常见问题 · 组件不在沉浸光感生效范围
+   *
+   * So the search field and the two icon buttons — which live in the shelf tab's *content* today —
+   * cannot be given the material where they are. They are moved into a title bar instead, which is
+   * the documented remedy rather than this app's invention: the FAQ's own 解决措施 is 「将需要沉浸光感
+   * 效果的组件置于 Navigation/NavDestination 标题栏…中」, and its worked example sets the material on
+   * a `Column` **inside the title builder** while the identical `Column` in the content area renders
+   * with no material.
+   *
+   * The header is a **local container** inside the bar rather than the bar itself, which is the shape
+   * the power guide's 正例 prescribes — 「在Navigation标题栏中为局部容器设置沉浸式系统材质，材质生效且
+   * 面积可控」 (沉浸光感功耗优化) — one 359 vp × 92 vp surface instead of a half-screen slab. It is also
+   * the same shape `ReaderView.topBarTitle` already uses for the reader's floating top bar, so the app
+   * has one way of hosting a material and not two.
+   *
+   * ## The `Navigation` is a material host, not a navigation container
+   *
+   * No `NavPathStack`, no destination, and **no content**: it exists for its title bar, exactly as the
+   * reader's top bar does. It is a sibling *above* the grid in this page's `Column`, not an overlay, so
+   * the bar reserves its own height in the layout and the grid simply starts below it — there is no
+   * second `contentStartOffset` to keep in step with it, and nothing to measure.
+   *
+   * That is why this is the low-risk form of the change: the shell's own `Navigation`
+   * (`Index.build`), its `settingsPathStack`, its `NavDestination` map, the r107 insets, the HdsTabs
+   * shell and the floating tab bar are all untouched. The nesting is the one the reader already has
+   * (a `Navigation` inside a `TabContent` inside the shell) and it is what keeps the material's
+   * carrier local to the page that needs it.
+   *
+   * ## The four attributes that are not cosmetic
+   *
+   *  - **`hideBackButton(true)`** — there is no back to go to, and the framework's own back control
+   *    would be a fourth thing in a bar that holds exactly three. Setting `title` is also what keeps
+   *    the bar displayed in spite of it.
+   *  - **`title`'s `backgroundColor: Color.Transparent`** — a material's visual layer sits *under*
+   *    `backgroundColor` and `backgroundBlurStyle` (沉浸光感常见问题 · 背景色或背景模糊遮挡材质效果), so
+   *    a bar still painting its own band would draw that slab **over** the material and the header
+   *    would read as flat. Transparent leaves the material as the only surface.
+   *  - **`barStyle: BarStyle.STACK`** — the material guide's own recommendation
+   *    (「建议设置沉浸光感时，使用 barStyle 为 STACK 样式，以便 Navigation 内容区延伸至标题栏区域，获得
+   *    沉浸光感的最佳体验」). It extends the *content* under the bar; this bar sits above the grid
+   *    rather than over it, so the extension changes nothing here, and the style is set because the
+   *    guide names it as part of the material configuration rather than for its layout effect.
+   *  - **`expandSafeArea([], [])`** — `Navigation` expands into the safe area by default, and this
+   *    component's own box must not grow into the band the header's padding is measured against
+   *    (「expand nothing」, the same pair `ReaderView.topBar` passes).
+   */
+  @Builder
+  private headerBar() {
+    Navigation() {
+      // Deliberately empty. See the note above: this `Navigation` exists for its title bar.
+    }
+    .width('100%')
+    .height(this.headerBarHeight())
+    .hideBackButton(true)
+    .title({ builder: this.materialHeaderTitle, height: this.headerBarHeight() },
+      { barStyle: BarStyle.STACK, backgroundColor: Color.Transparent })
+    .expandSafeArea([], [])
+  }
+
+  /**
+   * The title bar's height in vp: the measured system band, the title's line box, the header row, and
+   * the two gaps that separate them.
+   *
+   * Derived rather than fixed, and that is the point: the band is a property of the device (39 vp on
+   * the reference phone) and the row is `MIN_TAP_TARGET`, so a fixed number would be wrong on the first
+   * device with a different status bar. The other two tabs still take the same band through
+   * `Index.pageTitle`'s padding, so this bar and they cannot disagree about where the band ends — the
+   * one measurement is still the shell's (`Index.shellTopInsetVp`) and it still reaches both.
+   *
+   * `TAB_CONTENT_TITLE_HEIGHT` is deliberately **not** used as the bar's height. It is 56 vp because
+   * the reference keeps its page title as a fixed anchor a scrolling list collapses against; this bar
+   * cannot be that, because it holds a 48 vp control *and* a 30 fp title, and 56 vp would clip both.
+   */
+  private headerBarHeight(): number {
+    // One line box of `TYPE_TITLE_LARGE`, from `TYPE_TITLE_LARGE` rather than a second literal: the
+    // 1.175 em ratio is the reference device's own measured line box for this font
+    // (`Tokens.ets` records the two measured ratios, 1.161 and 1.175; the larger is used here).
+    const titleLineVp: number = TYPE_TITLE_LARGE * 1.175;
+    return this.topInsetVp + SPACE_S + titleLineVp + SPACE_S + MIN_TAP_TARGET;
+  }
+
+  /**
+   * The title bar's content: the 「书架」 title, then the search field and the two icon actions.
+   *
+   * The title's own builder (`headerTitle`) carries the hide/show rule; the row's (`headerRow`) carries
+   * the width arithmetic. What is decided *here* is only who paints the box they sit in, because that
+   * is the one thing that differs between a device the framework serves a material to and one it does
+   * not — and ArkTS cannot apply an attribute conditionally inside a single component call, so the box
+   * exists twice, containing the same two builders.
+   *
+   * ## Why the title lives inside this bar rather than in `Index.pageTitle`
+   *
+   * Because a `Navigation` title bar's content is this component's builder, and the title has to be
+   * *in* it to be part of the same surface. Keeping a copy in `Index` would draw 「书架」 twice — the
+   * duplication the audit's `pageTitle` section exists to prevent on the settings detail pages. The
+   * title is therefore handed in as a string (`pageTitle`) and drawn here from the same tokens
+   * `pageTitle` uses, so the three tabs still cannot disagree about the step, the weight or the colour.
+   *
+   * ## What each branch paints
+   *
+   * The material branch carries **no background at all**: a material's visual layer sits *under*
+   * `backgroundColor` and `backgroundBlurStyle`, so a background beside it is the slab that covers it
+   * (沉浸光感常见问题 · 背景色或背景模糊遮挡材质效果). The opaque branch is the palette's `card` — the
+   * surface this row already sat on, since the page is `background` — so a device that cannot be served
+   * a material sees the header it had before this round rather than a hole where one should be.
+   */
+  @Builder
+  private materialHeaderTitle() {
+    // The surface exists twice because ArkTS cannot apply an attribute conditionally inside one
+    // component call, and the two differ in **who paints**, not in what they contain.
+    if (this.headerMaterial !== undefined) {
+      Column() {
+        this.headerTitle()
+        this.headerRow()
       }
       .width('100%')
-      .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: SPACE_S, bottom: SPACE_S })
-      .alignItems(VerticalAlign.Center)
+      .height('100%')
+      .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: this.topInsetVp + SPACE_S, bottom: SPACE_S })
+      .alignItems(HorizontalAlign.Start)
+      // **The only `systemMaterial` this page carries, and it is inside a `Navigation` title bar's
+      // builder.** `headerBar` is what makes it in scope; see that builder for the citation.
+      .systemMaterial(this.headerMaterial)
+    } else {
+      Column() {
+        this.headerTitle()
+        this.headerRow()
+      }
+      .width('100%')
+      .height('100%')
+      .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: this.topInsetVp + SPACE_S, bottom: SPACE_S })
+      .alignItems(HorizontalAlign.Start)
+      .backgroundColor(this.palette.card)
+    }
+  }
+
+  /**
+   * One line box of the title, from the same ratio `headerBarHeight` uses.
+   *
+   * A separate helper rather than one expression written twice: the bar's height and the title's
+   * reserved space are two halves of one arithmetic, and the moment they are two literals the title
+   * clips inside its own bar or leaves a gap nobody can explain.
+   */
+  private headerTitleHeight(): number {
+    return TYPE_TITLE_LARGE * 1.175;
+  }
+
+  /**
+   * The search field and the two icon actions — the row that used to be the top of this page's
+   * `Column`.
+   *
+   * Unchanged in content, arithmetic and order. What moved is its **place in the tree**, and that is
+   * the whole of what the material needed:
+   *
+   *   359.1 vp content  = 391.1 − 2 × 16            (SHELF_GRID_PADDING, both sides)
+   *   247.1 vp search   = 359.1 − 48 − 48 − 2 × 8   (two MIN_TAP_TARGET circles, two 8 vp gaps)
+   *
+   * The two circles are fixed-size and the search field is the only weighted child, so the row cannot
+   * overflow: there is nothing for it to squeeze but the field. The right padding is `SPACE_S` here
+   * rather than the grid's `SHELF_GRID_PADDING` — that comes from the parent `Row`, so the two are not
+   * added, and `MIN_TAP_TARGET` + `SPACE_S` match the gap the row already had above and below it.
+   */
+  @Builder
+  private headerRow() {
+    Row({ space: SPACE_S }) {
+      Search({ value: this.search, placeholder: '搜索书名或作者' })
+        .layoutWeight(1)
+        .onChange((value: string): void => {
+          this.search = value;
+          this.onReload();
+        })
+      this.syncIconButton()
+      this.importIconButton()
+    }
+    .width('100%')
+    .height(MIN_TAP_TARGET)
+    .alignItems(VerticalAlign.Center)
+  }
+
+  /**
+   * The 「书架」 title — the one thing in this header that moves.
+   *
+   * ## Only `opacity` and `translate`, and the space is reserved rather than reclaimed
+   *
+   * 「上划的时候就隐藏『书架』标题」 is answered by `titleHidden`, and the two properties above are the
+   * whole of what is derived from it. **The row keeps its height whether the title is visible or not** —
+   * it is `headerTitleHeight()`, not "whatever the text measures" — so the search row below it does not
+   * move and the grid, whose top edge is this bar's bottom edge, does not reflow.
+   *
+   * Collapsing the title instead would grow the grid by ~44 vp **during the gesture**. That is the
+   * class of problem this project has already paid for twice — r109's whole-row pop in this very grid,
+   * and the reader re-paginating when a bar changed its measured page box — which is why the reserved
+   * space is the deliberate choice and not an oversight. Its visible cost is ~44 vp of empty space under
+   * the status bar once the shelf is scrolled down; its benefit is that nothing on screen moves except
+   * the title itself.
+   *
+   * The movement is upward, which is the direction the gesture is going, so the title reads as receding
+   * rather than as sliding sideways out of a header that is staying put.
+   */
+  @Builder
+  private headerTitle() {
+    Row() {
+      Text(this.pageTitle)
+        .fontSize(TYPE_TITLE_LARGE)
+        .fontWeight(FontWeight.Bold)
+        .fontColor(this.palette.foreground)
+        .maxLines(1)
+        .textOverflow({ overflow: TextOverflow.Ellipsis })
+    }
+    .width('100%')
+    .height(this.headerTitleHeight())
+    .opacity(this.titleHidden ? 0 : 1)
+    .translate({ y: this.titleHidden ? -HEADER_TITLE_HIDE_OFFSET : 0 })
+  }
+
+  build() {
+    Column() {
+      // Search, the two actions and the title all live in the shelf, not the shell, because they only
+      // affect this list.
+      //
+      // **They are no longer the page's first row.** r117's row — the search field between the sync
+      // and import circles, padded by `SHELF_GRID_PADDING`, top and bottom by `SPACE_S` — is now
+      // `headerRow()` inside `materialHeaderTitle`, which is the content of the `Navigation` title
+      // bar above. The geometry is unchanged; only the host moved, and it moved because the framework
+      // serves 沉浸光感 to a component in a title bar and to nowhere else.
+      //
+      // **The sort button is still gone (r117)** and this round does not restore it: its slot holds the
+      // sync button, and 导入 is the circle beside it. The ability to re-order the shelf is still lost,
+      // and it is still recorded on this struct, on `Index.shelfSort` and in the audit.
+      this.headerBar()
 
       if (this.loading) {
         Column() {
@@ -1289,6 +1653,12 @@ export struct ShelfPage {
         // Gated like the other scroll owners, so switching animation off also stops the
         // shelf stretching past its last row and springing back.
         .edgeEffect(Motion.edgeEffect())
+        // Feeds the 「书架」 title's hide/show rule. `handleGridScroll` carries the declaration
+        // (`@since 12`), why it is `onDidScroll` rather than the deprecated `onScroll`, and why the
+        // callback is not branched on `ScrollState`.
+        .onDidScroll((scrollOffset: number, scrollState: ScrollState): void => {
+          this.handleGridScroll(scrollOffset);
+        })
         .onAreaChange((oldValue: Area, newValue: Area): void => {
           const width: number = Number(newValue.width);
           if (Number.isNaN(width) || width <= 0) {

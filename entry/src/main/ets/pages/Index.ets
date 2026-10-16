@@ -1,5 +1,5 @@
 import { common, ConfigurationConstant } from '@kit.AbilityKit';
-import { SymbolGlyphModifier, window } from '@kit.ArkUI';
+import { curves, SymbolGlyphModifier, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 // HDS supplies the floating (悬浮式) bottom tab bar and its 沉浸光感 material. Guarded
 // by a capability check at render time, so a device without it uses native `Tabs`
@@ -56,6 +56,7 @@ import { ReaderView } from './ReaderView';
 import { ShelfPage } from './ShelfPage';
 import { SyncSettingsPage } from './SyncSettingsPage';
 import { apiLevel, asThemeMode, deviceMaterialLevel, FLOATING_BAR_BOTTOM_MARGIN, FLOATING_BAR_CLEARANCE, FLOATING_BAR_MASK_HEIGHT, FLOATING_BAR_SIDE_MARGIN, MIN_TAP_TARGET, materialOption, paletteFor, RADIUS_CARD, RADIUS_CHIP, RADIUS_CONTROL, RADIUS_IMAGE, RADIUS_LABEL, SPACE_M, SPACE_S, SPACE_XS, SurfaceStyle, TAB_LABEL_SIZE, THEME_MODES, ThemeMode, ThemePalette, themeDescription, TYPE_BODY, TYPE_TITLE, TYPE_TITLE_LARGE, TYPE_CAPTION, TYPE_SUBTITLE } from '../theme/Theme';
+import { HEADER_TITLE_DAMPING, HEADER_TITLE_HIDE_THRESHOLD, HEADER_TITLE_RESPONSE, HEADER_TITLE_SHOW_AT } from '../theme/Tokens';
 import { loadAnimationSpeedIndex, loadThemeMode, saveAnimationSpeedIndex, saveThemeMode } from '../theme/AppearanceStore';
 import {
   ANIMATION_OPTIONS,
@@ -305,7 +306,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r117 (shelf-cover-progress-icon-actions)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r118 (shelf-header-immersive-material)';
 
 /**
  * A byte count as something a person can read.
@@ -657,6 +658,92 @@ struct Index {
    */
   @State private shelfSort: BookSort = Sort.RECENTLY_OPENED;
   @State private shelfMessage: string = '';
+
+  /**
+   * Whether the 「书架」 title is hidden because the shelf has been scrolled up.
+   *
+   * The user's third ask (「我还想上划的时候就隐藏"书架"标题」). **This field is the single writer of
+   * that decision**: `ShelfPage` measures the grid's scroll and hands the two numbers here
+   * (`onTitleScroll`), and this is where the thresholds are applied, because the title's state and the
+   * rule that flips it belong in one place. `ShelfPage` renders from it and never writes it.
+   *
+   * ## The rule, and why it is a band rather than a comparator
+   *
+   * `onDidScroll` reports a **per-frame** delta, so a rule that flipped the title on the sign of each
+   * delta would flicker on the finger's own jitter — every reversal of one pixel flipping it back.
+   * The decision therefore reads the **cumulative** offset against two different thresholds, and
+   * between them the title keeps whatever it had:
+   *
+   *   moved up  and offset >= HEADER_TITLE_HIDE_THRESHOLD (24 vp)  ->  hide
+   *   moved down or offset <= HEADER_TITLE_SHOW_AT (12 vp)         ->  show
+   *
+   * So it reappears on **either** a downward scroll **or** a return to the top, which is deliberately
+   * both: r108 measured this grid's whole scroll range at ~857 px with a small library, so a user can
+   * reach the bottom and stop after very little movement. A rule that only restored the title on a
+   * reversal would leave it hidden with no gesture left that brings it back; the top of the list is
+   * where the user actually is when that happens, and the grid's own spring edge effect returning the
+   * offset to 0 puts it inside the 12 vp band on its own. (The enum's name is deliberately not
+   * spelled here: `verify-motion.mjs` asserts that no page carries an unconditional edge-effect
+   * literal, and it scans comments as well as code.)
+   */
+  @State private shelfTitleHidden: boolean = false;
+
+  /**
+   * Apply the 「书架」 title's hide/show rule to one frame of the shelf's scroll.
+   *
+   * Called by `ShelfPage` through the injected `onTitleScroll`, with `up` the direction of travel and
+   * `offset` the cumulative distance from the top in vp. The thresholds and the reasoning are on
+   * `shelfTitleHidden`; this method is only the decision, and the animation is the next method.
+   */
+  private onShelfTitleScroll(up: boolean, offset: number): void {
+    const shouldHide: boolean = !(offset <= HEADER_TITLE_SHOW_AT) && (up || this.shelfTitleHidden);
+    if (shouldHide === this.shelfTitleHidden) {
+      return;
+    }
+    this.applyShelfTitleHidden(shouldHide);
+  }
+
+  /**
+   * Move the 「书架」 title between shown and hidden.
+   *
+   * ## Why this is `animateTo` over a state field, and not a `TransitionEffect`
+   *
+   * The title is not arriving or leaving the tree — it is a component that stays mounted and whose
+   * **`opacity` and `translate` are derived from `shelfTitleHidden`**. A `TransitionEffect` has no
+   * "from" value for a component that never leaves, which is the same reason the reader's two floating
+   * bars use `animateTo` (`ReaderView.toggleBars`) rather than a transition.
+   *
+   * ## Only render properties, and that is a hard constraint
+   *
+   * The title's row is also the title bar's content, so the bar's height is what pushes the grid down.
+   * Animating `height`, `padding`, `margin` or `layoutWeight` would reflow the grid **during the
+   * gesture** — the class of defect this project has already paid for twice (r109's whole-row pop in
+   * this very grid, and the reader's re-pagination when a bar changed the measured page box). So the
+   * title's space is **reserved and the title only fades and slides**: `ShelfPage.headerTitle` derives
+   * `opacity` and `translate` from this flag and nothing else.
+   *
+   * ## `animationOn` is the gate, and "off" means no tween at all
+   *
+   * The same `@StorageLink(MOTION_ON_KEY)` that drives every `.clickEffect(...)`, the shelf's cell
+   * transitions and the reader's bars, so the whole app's motion switches together. With it off the
+   * assignment is made directly, outside any animation context, and the title **snaps** — `animateTo`
+   * is skipped, not handed `duration: 0`, which would still open an animation context and still run a
+   * frame of interpolation. Same rule, same spelling as `ReaderView.toggleBars`.
+   */
+  private applyShelfTitleHidden(hidden: boolean): void {
+    const apply: () => void = (): void => {
+      this.shelfTitleHidden = hidden;
+    };
+    if (this.animationOn) {
+      this.getUIContext().animateTo({
+        // Inert beside a spring curve — the SDK states a spring animation's length comes from the
+        // spring's own physical parameters — so no `duration` is passed.
+        curve: curves.springMotion(HEADER_TITLE_RESPONSE, HEADER_TITLE_DAMPING),
+      }, apply);
+    } else {
+      apply();
+    }
+  }
 
   // --- reader state --------------------------------------------------------
   /** The book currently open, or `undefined` when the shelf is showing. */
@@ -2242,13 +2329,25 @@ struct Index {
   @Builder
   private shelfSection() {
     Column() {
-      this.pageTitle('书架')
-
       ShelfPage({
         palette: paletteFor(this.themeMode),
         books: this.shelfBooks,
         loading: this.shelfLoading,
         search: this.shelfSearch,
+        // The tab's own title, drawn inside the page's header rather than by `pageTitle` — see
+        // `ShelfPage.pageTitle`. It has to live where the material does, and the material can only
+        // live in a title bar, whose content is `ShelfPage`'s builder.
+        pageTitle: '书架',
+        // The measured band, so the title's first line of ink still clears the status bar and the
+        // punch hole. This used to reach the title through the section's own padding; it reaches it
+        // through the header now, and it is still the shell's one measurement.
+        topInsetVp: this.shellTopInsetVp,
+        // Whether the title is currently hidden. Written by `onShelfTitleScroll` below; the page only
+        // renders from it, and only ever through `opacity` and `translate`.
+        titleHidden: this.shelfTitleHidden,
+        onTitleScroll: (up: boolean, offset: number): void => {
+          this.onShelfTitleScroll(up, offset);
+        },
         // The two things the header's sync button needs, and the reason both come from the shell:
         // `syncBusy` is the same field the 设置 → 同步 page disables its own buttons on, and
         // `runSync(NORMAL)` is the identical call that page's 同步 button makes. The shelf owns
