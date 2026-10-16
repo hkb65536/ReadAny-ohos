@@ -21,10 +21,13 @@ import {
 import {
   MENU_TRIGGER_GAP,
   MENU_TRIGGER_GLYPH_SIZE,
+  MENU_TRIGGER_INSET,
   MENU_TRIGGER_SIZE,
   MENU_TRIGGER_TOUCH,
   MENU_WIDTH_CARD_RATIO,
   MENU_WIDTH_UNMEASURED,
+  PLACEHOLDER_TITLE_LINES,
+  PLACEHOLDER_TITLE_SIZE,
 } from '../theme/Tokens';
 import { MOTION_ON_KEY, Motion, transitionOrIdentity } from '../theme/Motion';
 
@@ -69,11 +72,17 @@ const SHELF_COLUMNS_GAP: number = 12;
  * is served page-wide. `menuOptions` records the log line and the declarations.
  *
  * The `⋯` and the menu are modelled on ReadAny's book-card menu
- * (`packages/app-expo/src/components/library/BookCardActionSheet.tsx`): the control
- * overlaps the cover's bottom-right corner, and the menu opens below it, right-aligned
- * to it, which is what places it to the control's lower-left. `Placement.BottomRight`
- * is that position, and the `offset` of 8 vp below the control is the reference's own
- * gap.
+ * (`packages/app-expo/src/components/library/BookCardActionSheet.tsx`): the control sits on
+ * the cover's bottom-right corner, and the menu opens below it, right-aligned to it, which
+ * is what places it to the control's lower-left. `Placement.BottomRight` is that position,
+ * and the `offset` of 8 vp below the control is the reference's own gap.
+ *
+ * **The control is inside the cover, not straddling its edge.** The reference hangs half of
+ * it over the cover's bottom edge; on the device that put 10 vp of a 32 vp chip on the title
+ * line below and pushed the 48 vp tap box 32 vp out of the cover — 「书籍的操作按钮会超出书籍
+ * 封面的范围，和文字重叠」. It is now anchored to the cover's bottom-right corner and inset 8 vp
+ * *inward* from it, so it is contained at every card width; `coverMenuTrigger` carries the
+ * arithmetic.
  *
  * ## Deleting
  *
@@ -350,18 +359,59 @@ export struct ShelfPage {
         } else {
           // A placeholder rather than nothing: an empty slot makes the grid look
           // broken, and a book with no cover is a normal case.
+          //
+          // ## The whole title, not its first letter
+          //
+          // This used to draw **one character** of the title — a single `substring` call, kept
+          // deliberately unspelled here because `verify-book-menu.mjs` asserts that form's
+          // absence over the raw file, comments included — at 28 fp, one enormous initial per
+          // coverless book. The user's report on the installed build is the argument against
+          // it: a shelf of coverless books then reads as a wall of letters that does not name
+          // anything, and the title below the box is 12 fp and truncated. The full title goes
+          // in the cover instead, at `PLACEHOLDER_TITLE_SIZE` — one step down from the old 28,
+          // which is what 「字号比现在小一点」 asks for while the *text* is what got longer.
+          //
+          // ## Why this cannot move the cover box
+          //
+          // The box is `aspectRatio(0.7)` and the grid's row heights depend on it, so
+          // nothing here may grow it. Two things guarantee that, and neither is a promise:
+          //
+          //  - `maxLines(PLACEHOLDER_TITLE_LINES)` bounds the `Text`'s own measured height
+          //    to that many line boxes, so `justifyContent(FlexAlign.Center)` has a bounded
+          //    child to centre, and
+          //  - `clip(true)` bounds what can be *painted* to this box even if a font's line
+          //    box is taller than the arithmetic in `Tokens.ets` assumed.
+          //
+          // `padding(SPACE_XS)` is the horizontal half that matters: the `Text` is
+          // `width('100%')` of the padded column, and that width is what decides how many
+          // characters fit per line (see `PLACEHOLDER_TITLE_SIZE`). The vertical half is
+          // slack — the block is centred in it — so the padding is one number rather than
+          // an asymmetric object.
           Column() {
-            Text(book.title.length > 0 ? book.title.substring(0, 1) : '?')
-              .fontSize(28)
+            Text(book.title.length > 0 ? book.title : '未命名')
+              .fontSize(PLACEHOLDER_TITLE_SIZE)
               // `placeholderForeground`, not `mutedForeground`: the surface below is the
               // placeholder's own and is darker than `muted` in the light theme, which the
               // shared muted text colour does not survive (3.42:1). This pair measures
               // 4.64:1 light / 5.49:1 dark / 3.92:1 sepia.
               .fontColor(this.palette.placeholderForeground)
+              // Centre-aligned because the box is a cover and the title sits on it like a
+              // cover's own lettering. It is also what keeps a *full* line off the 8 vp
+              // corner arc: a line of n characters is inset by (inner width − n × size) / 2,
+              // which at four 24 fp characters is ~4 vp of the padding plus the centring
+              // slack, not zero.
+              .textAlign(TextAlign.Center)
+              .maxLines(PLACEHOLDER_TITLE_LINES)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              // Bounded, or the ellipsis silently does nothing: `TextOverflow` needs a
+              // width to truncate against.
+              .width('100%')
           }
           .width('100%')
           .height('100%')
           .justifyContent(FlexAlign.Center)
+          .padding(SPACE_XS)
+          .clip(true)
           // `RADIUS_IMAGE`, not `RADIUS_CARD`: this is the placeholder that occupies the
           // cover's box, so it must be the same rounded rectangle as the cover it stands
           // in for — a card radius here would make the grid re-shape itself the moment a
@@ -381,9 +431,27 @@ export struct ShelfPage {
       .aspectRatio(0.7)
 
       Text(book.title.length > 0 ? book.title : '未命名')
-        .fontSize(12)
-        .maxLines(2)
+        // `TYPE_CAPTION`, the theme's caption step, rather than the bare `12` this was:
+        // the number was already right, the point is that it is a step of the app's scale
+        // and not a coincidence.
+        .fontSize(TYPE_CAPTION)
+        // `foreground`, and this is a fix rather than a restatement. An unset `fontColor`
+        // follows the *system* colour mode, which is the same defect this file's `palette`
+        // doc records for `background`: with a dark system mode and the sepia app theme
+        // the caption was near-white on a warm page. It matters more now that the line is
+        // truncated — a half-shown title the reader cannot read at all is worse than one
+        // she can see is only half shown.
+        .fontColor(this.palette.foreground)
+        // **One line, always.** A title that wrapped to two lines made its **whole grid
+        // row** taller than every other row: measured on the reference device (r108), row 1
+        // was 683 px against 636 px for rows 2–4, because a `Grid` row is as tall as its
+        // tallest cell, so one long title re-spaced a row of three books. `maxLines(1)`
+        // with an ellipsis is the user's own prescription (「书名只有一行，超出字数限制用省略号」).
+        .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
+        // Bounded, or the ellipsis silently does nothing: `TextOverflow` needs a width to
+        // truncate against, and the cell is a `Column` of `width('100%')` with no intrinsic
+        // width of its own.
         .width('100%')
 
       // Progress is shown only when there is some: a 0% bar on every unread book
@@ -404,25 +472,54 @@ export struct ShelfPage {
   /**
    * The `⋯` that opens a book's action menu.
    *
-   * ## Position
+   * ## Position — inside the cover, and why it is now inside
    *
-   * The reference puts this control on the cover's **bottom-right corner**, overlapping
-   * the line below it, and that is what this reproduces: the chip is drawn at the
-   * bottom-right of a `MENU_TRIGGER_TOUCH` box aligned to the cover's bottom-right
-   * corner, and the box is then shifted down by half the chip, so the chip's centre lands
-   * on the cover's bottom edge and the chip hangs over the title line below.
+   * A `MENU_TRIGGER_TOUCH` box is aligned to the cover `Stack`'s **bottom-right** corner and
+   * then pulled **inward** by `MENU_TRIGGER_INSET` in both axes. The chip is aligned to that
+   * box's bottom-right corner too, so chip and box share a corner and the chip ends up
+   * `MENU_TRIGGER_INSET` inside the cover's own bottom-right corner.
    *
-   * The shift is an `offset`, not a `margin`. An offset is a render-time translation and
-   * does not take part in layout, which matters here: a margin would change the cover
-   * `Stack`'s measured size under `aspectRatio(0.7)` and every cover in the grid would
-   * shrink.
+   * It used to go the other way. r108 and every round before it shifted the box *down* by
+   * `MENU_TRIGGER_SIZE / 2` (16 vp), deliberately, so the chip's centre landed on the
+   * cover's bottom edge — the shape ReadAny's book card uses. On the installed build the
+   * user's report is 「书籍的操作按钮会超出书籍封面的范围，和文字重叠」, and the arithmetic says
+   * exactly that: the chip then occupied y ∈ [cover bottom − 16, cover bottom + 16], while
+   * the title's first line begins at `cover bottom + 6` (the cell `Column`'s own gap), so
+   * 10 vp of a 32 vp chip sat on the title, and the 48 vp tap box escaped the cover by 32 vp
+   * of its 48.
+   *
+   * The fix is a **sign change and an anchor**, not a new number chosen by eye. `Alignment.BottomEnd`
+   * already anchors the box to the cover's bottom-right corner, and the cover box is
+   * `aspectRatio(0.7)` on a `width('100%')` — so the corner the offset measures from *is* the
+   * cover's rendered corner at every card width, which is what an absolute downward
+   * displacement could never be. Pulling inward by 8 vp is then inside the cover and stays
+   * inside it for every column count (see the containment check in `verify-book-menu.mjs`,
+   * which evaluates it at every breakpoint).
+   *
+   * The arithmetic on the reference device (one card = 111.7 vp wide, so the cover box is
+   * 111.7 × 159.6 vp):
+   *
+   *   chip        32 × 32 vp  → x ∈ [71.7, 103.7], y ∈ [119.6, 151.6]   (8 vp in from both edges)
+   *   tap box     48 × 48 vp  → x ∈ [55.7, 103.7], y ∈ [103.6, 151.6]   (fully inside)
+   *   overflow    none — the chip's bottom edge is 8 vp **above** the cover's bottom edge,
+   *               and the title's first line begins 6 vp **below** it, so the two are 14 vp
+   *               apart instead of overlapping by 10.
+   *
+   * ## The offset is still an `offset`, not a `margin`
+   *
+   * An offset is a render-time translation and does not take part in layout, which matters
+   * here: a margin would change the cover `Stack`'s measured size under `aspectRatio(0.7)`
+   * and every cover in the grid would shrink. The inset is small enough for the *anchor* to
+   * be the whole story, which is why `Alignment.BottomEnd` is load-bearing rather than
+   * decorative.
    *
    * ## Tap target
    *
    * The visible chip is 32 vp, which is below the 48 vp guidance minimum, so the chip
    * sits inside a transparent `MENU_TRIGGER_TOUCH` box and the **box** carries the tap
    * handler. The finger gets the guidance's target; the eye gets the reference's small
-   * chip.
+   * chip. The inset does not touch this: the box is still 48 vp and it is still the thing
+   * that is hit — it has simply moved 8 vp up and left, still over the cover it belongs to.
    *
    * The chip is aligned to that box's *bottom* edge rather than centred in it, and that
    * is what makes the menu's own offset mean what it says below: the popup anchors to the
@@ -464,7 +561,12 @@ export struct ShelfPage {
     }
     .width(MENU_TRIGGER_TOUCH)
     .height(MENU_TRIGGER_TOUCH)
-    .offset({ x: 0, y: MENU_TRIGGER_SIZE / 2 })
+    // **Inward**, from the cover's bottom-right anchor. See the doc above: the sign is the
+    // fix, and `MENU_TRIGGER_INSET` is a positive inset as the name says. The guard against
+    // a positive `y` is arithmetic rather than taste — the box is exactly
+    // `MENU_TRIGGER_TOUCH` tall and is aligned to the cover's bottom edge, so **any**
+    // positive `y` puts part of the box, and half the chip with it, outside the cover.
+    .offset({ x: -MENU_TRIGGER_INSET, y: -MENU_TRIGGER_INSET })
     .clickEffect(this.animationOn ? Motion.clickEffect() : null)
     .onClick((): void => {
       this.menuBookId = book.id;

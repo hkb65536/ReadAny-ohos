@@ -305,7 +305,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r113 (remove-reader-entrance)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r114 (shelf-cell-fit)';
 
 /**
  * A byte count as something a person can read.

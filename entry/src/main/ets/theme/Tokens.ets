@@ -210,12 +210,103 @@ export const MENU_TRIGGER_GLYPH_SIZE: number = 18;
 export const MENU_TRIGGER_TOUCH: number = 48;
 
 /**
+ * How far *inside* the cover's bottom-right corner the control sits, in vp.
+ *
+ * The sign is the whole point and it lives at the call site, not here: the control's box is
+ * aligned to the cover `Stack`'s bottom-right corner, so this value has to be applied as a
+ * **negative** offset. r108 and earlier applied a positive one (`MENU_TRIGGER_SIZE / 2`),
+ * which is the shape ReadAny's card uses — the chip's centre on the cover's bottom edge —
+ * and which on the device put 10 vp of the 32 vp chip onto the title line 6 vp below the
+ * cover and pushed 32 vp of the 48 vp tap box out of the cover entirely. The user's report
+ * on that build: 「书籍的操作按钮会超出书籍封面的范围，和文字重叠」.
+ *
+ * 8 vp is the same gap the menu opens with (`MENU_TRIGGER_GAP`), so the control's inset and
+ * its popup's gap are one number's worth of air rather than two.
+ *
+ * **Containment is arithmetic, and `verify-book-menu.mjs` evaluates it.** The binding
+ * dimension is the cover's *width* — it is `aspectRatio(0.7)`, so its height is
+ * `width / 0.7`, i.e. 1.43× wider than tall. The box is inside the cover at a given card
+ * width exactly when `MENU_TRIGGER_INSET + MENU_TRIGGER_TOUCH <= card width`
+ * (8 + 48 = 56 vp). The check re-derives the card width from the shelf's own padding, gap
+ * and column breakpoints and holds that inequality at every breakpoint and at the reference
+ * phone's width.
+ */
+export const MENU_TRIGGER_INSET: number = 8;
+
+/**
  * Gap between the `⋯` control and the menu it opens, in vp.
  *
  * The reference's own number: it positions its popup at `anchor.y + anchor.height + 8`
  * (`packages/app-expo/src/components/library/BookCardActionSheet.tsx:158`).
  */
 export const MENU_TRIGGER_GAP: number = 8;
+
+// ---------------------------------------------------------------------------
+// Coverless placeholder
+// ---------------------------------------------------------------------------
+
+/**
+ * Font size of the title drawn inside a coverless book's placeholder box, in fp.
+ *
+ * The placeholder used to draw **one** character — `book.title.substring(0, 1)` — at 28 fp.
+ * The user asked for the whole title instead at 「字号比现在小一点」, so the size is a step
+ * down and the *content* is what grew.
+ *
+ * ## Why 24 and not less
+ *
+ * Because of `placeholderForeground` on `placeholderSurface`, which measures 4.636:1 in the
+ * light theme, 5.489:1 in dark and **3.916:1 in sepia**. The light and dark pairs clear the
+ * project's 4.5:1 body-text floor; sepia's does not, and holding sepia at 4.5:1 would mean
+ * changing a palette value — a change this project already declined to make once, on the
+ * grounds that sepia was never reported as broken (see the floors block in
+ * `tools/verify-themes.mjs`). What keeps sepia legitimate is the WCAG large-text exemption:
+ * at 3:1 a *large* glyph is held to the lower floor, and 24 fp is the size at which that
+ * exemption is written (18 pt = 24 px in the same convention `verify-themes.mjs` uses to say
+ * "the placeholder initial is far larger"). So 24 fp is not a taste preference: it is the
+ * smallest size at which this token can move without dragging a palette value with it, and
+ * `verify-themes.mjs` now asserts that it stays at or above that threshold.
+ *
+ * ## What 24 fp buys, in characters
+ *
+ * The numbers below are the reference device's **measured** ones, not estimates. The layout
+ * dump r108 took of the installed build gives one card as 377 × 539 **px** (111.7 × 159.7 vp —
+ * 377 / 0.7 = 539 exactly, which is the aspect ratio doing its job), and it gives two line
+ * boxes at two different sizes, which is what fixes the font's line-height ratio rather than
+ * assuming one: the 12 fp caption's box is 47 px tall (1.161 em) and the 28 fp placeholder
+ * glyph's box is 111 px tall (1.175 em). Using the larger of the two, 1.175 em:
+ *
+ *   inner box (SPACE_XS of padding)  350 × 512 px        (103.7 × 151.7 vp)
+ *   one CJK glyph is a full em       24 fp = 81 px
+ *   characters per line              floor(350 / 81)                    = 4
+ *   one line box                     1.175 × 81                         = 95.2 px
+ *   lines that fit                   floor(512 / 95.2)                  = 5
+ *   capacity                         4 × 5                             = 20 CJK characters
+ *
+ * 20 is not a round number chosen in advance; it is what the box holds. It covers every title
+ * this round was reported against — `斗罗大陆2绝世唐门足交传说` is 13 characters and
+ * `斗罗大陆III龙王传说` is 11 — and a title longer than that is ellipsized after
+ * `PLACEHOLDER_TITLE_LINES` lines, which is the stated compromise: the alternative is a
+ * smaller glyph, and a smaller glyph costs sepia its contrast exemption (above).
+ */
+export const PLACEHOLDER_TITLE_SIZE: number = 24;
+
+/**
+ * How many lines of that title the placeholder will draw at most, in lines.
+ *
+ * Set from the measured box rather than from the appetite: five lines of 24 fp at the
+ * device's own measured line box is 5 × 95.2 = 476 px inside the 512 px the padded box offers.
+ * That 36 px of slack is what makes five the largest count that still leaves the block centred
+ * with air above and below it; four would leave 136 px unused *and* would truncate a
+ * 17-character title the box can actually hold.
+ *
+ * Its other job is structural, and it is why this is a clamp rather than a hope: `maxLines`
+ * bounds the `Text`'s **measured** height to that many line boxes, and the placeholder
+ * `Column` clips, so a title of any length can neither move the box nor paint outside it. The
+ * box cannot move regardless — it is `width('100%')` + `aspectRatio(0.7)`, so its height comes
+ * from its width and not from its children (measured: 377 / 0.7 = 539 px) — but the clamp is
+ * what keeps the *text* inside the cover rather than merely the cover the right size.
+ */
+export const PLACEHOLDER_TITLE_LINES: number = 5;
 
 // ---------------------------------------------------------------------------
 // Page frame
