@@ -250,61 +250,99 @@ export const MENU_TRIGGER_GAP: number = 8;
  *
  * The placeholder used to draw **one** character — `book.title.substring(0, 1)` — at 28 fp.
  * The user asked for the whole title instead at 「字号比现在小一点」, so the size is a step
- * down and the *content* is what grew.
+ * down and the *content* is what grew. r114 took that step to 24 fp; **r115 took a second one,
+ * to 12 fp, at the user's request — 「封面上的书名可以再小一点，先取现在的50%我看看。」**
  *
- * ## Why 24 and not less
+ * ## This is below the large-text exemption, deliberately, and it is a recorded departure
  *
- * Because of `placeholderForeground` on `placeholderSurface`, which measures 4.636:1 in the
- * light theme, 5.489:1 in dark and **3.916:1 in sepia**. The light and dark pairs clear the
- * project's 4.5:1 body-text floor; sepia's does not, and holding sepia at 4.5:1 would mean
- * changing a palette value — a change this project already declined to make once, on the
- * grounds that sepia was never reported as broken (see the floors block in
- * `tools/verify-themes.mjs`). What keeps sepia legitimate is the WCAG large-text exemption:
- * at 3:1 a *large* glyph is held to the lower floor, and 24 fp is the size at which that
- * exemption is written (18 pt = 24 px in the same convention `verify-themes.mjs` uses to say
- * "the placeholder initial is far larger"). So 24 fp is not a taste preference: it is the
- * smallest size at which this token can move without dragging a palette value with it, and
- * `verify-themes.mjs` now asserts that it stays at or above that threshold.
+ * `placeholderForeground` on `placeholderSurface` measures 4.636:1 in the light theme,
+ * 5.489:1 in dark and **3.916:1 in sepia**. Light and dark clear the project's 4.5:1
+ * body-text floor. **Sepia's does not, and it never has.** What made sepia legitimate at
+ * 24 fp was the WCAG large-text exemption — 3:1 rather than 4.5:1 — and that exemption is
+ * about **font size**. r114 chose 24 fp as the smallest size at which the exemption still
+ * applied, and `tools/verify-themes.mjs` asserted it stayed at or above that threshold.
  *
- * ## What 24 fp buys, in characters
+ * **At 12 fp the exemption no longer applies.** The size was reduced at the user's request,
+ * knowing the cost: sepia's placeholder pair is now **below** the 4.5:1 floor with no
+ * exemption to cover it, so it is a genuine shortfall rather than an exempted one. That is a
+ * recorded, deliberate departure and not an oversight. The alternative is a new sepia palette
+ * value, which is the user's call and not a code round's — this project has already declined
+ * an unrequested palette change once, on the grounds that sepia was never reported as broken.
+ *
+ * `tools/verify-themes.mjs` carries the departure in exactly this form. The threshold check
+ * that used to pin the size *above* 24 fp could not survive the request — its premise is now
+ * false by design — so it was re-pointed rather than deleted: it now asserts the size is a
+ * named token, that sepia's pair measures below 4.5:1, and that **this paragraph is still
+ * here**. The invariant is "the project knows this is below the floor and has recorded why",
+ * which is stronger than the old numeric bound: at 24 fp every trace of the *reason* could
+ * have been deleted while the number stayed legal.
+ *
+ * ## What 12 fp buys, in characters
  *
  * The numbers below are the reference device's **measured** ones, not estimates. The layout
  * dump r108 took of the installed build gives one card as 377 × 539 **px** (111.7 × 159.7 vp —
  * 377 / 0.7 = 539 exactly, which is the aspect ratio doing its job), and it gives two line
  * boxes at two different sizes, which is what fixes the font's line-height ratio rather than
- * assuming one: the 12 fp caption's box is 47 px tall (1.161 em) and the 28 fp placeholder
- * glyph's box is 111 px tall (1.175 em). Using the larger of the two, 1.175 em:
+ * assuming one: the 12 fp caption's box is 47 px tall (**1.161 em**) and the 28 fp placeholder
+ * glyph's box is 111 px tall (1.175 em). At 12 fp the size in question is the one that was
+ * measured **directly**, so the ratio used is the 12 fp box's own, 1.161 em; the 28 fp figure
+ * is carried as the conservative bound, and both give the same line count below.
  *
  *   inner box (SPACE_XS of padding)  350 × 512 px        (103.7 × 151.7 vp)
- *   one CJK glyph is a full em       24 fp = 81 px
- *   characters per line              floor(350 / 81)                    = 4
- *   one line box                     1.175 × 81                         = 95.2 px
- *   lines that fit                   floor(512 / 95.2)                  = 5
- *   capacity                         4 × 5                             = 20 CJK characters
+ *   one CJK glyph is a full em       12 fp = 40.5 px
+ *   characters per line              floor(350 / 40.5)                  = 8
+ *   one line box                     1.161 × 40.5                      = 47.0 px
+ *                                    (1.175 × 40.5 = 47.6 px, conservative)
+ *   lines the box itself could hold  floor(512 / 47.0)                  = 10
+ *   lines actually drawn             min(10, PLACEHOLDER_TITLE_LINES)   = 5
+ *   capacity                         8 × 5                             = 40 CJK characters
  *
- * 20 is not a round number chosen in advance; it is what the box holds. It covers every title
- * this round was reported against — `斗罗大陆2绝世唐门足交传说` is 13 characters and
- * `斗罗大陆III龙王传说` is 11 — and a title longer than that is ellipsized after
- * `PLACEHOLDER_TITLE_LINES` lines, which is the stated compromise: the alternative is a
- * smaller glyph, and a smaller glyph costs sepia its contrast exemption (above).
+ * **`PLACEHOLDER_TITLE_LINES` is now the binding constraint, not the box.** At 24 fp the box
+ * ran out after five lines (floor(512 / 95.2) = 5), so the clamp and the geometry said the
+ * same thing; at 12 fp the box fits ten and the clamp is the only thing stopping the block at
+ * five. The block is 5 × 47.0 = 235 px inside 512 px, so it is nowhere near clipped and the
+ * clamp is not protecting against an over-tall text block — it is only bounding how much of a
+ * very long title is shown.
+ *
+ * 40 characters is more than three times r114's 20 and far more than any title this shelf has:
+ * `斗罗大陆2绝世唐门足交传说` is 13 characters and now takes two of the five lines, and
+ * `斗罗大陆III龙王传说` is 11 and also takes two. **A future round may well want fewer lines**
+ * — five is now generous rather than tight — but r115 did not change the count, because the
+ * arithmetic raises no problem and five is still the value that keeps every real title whole.
+ *
+ * ## What this must not do
+ *
+ * The cover box is `width('100%')` + `aspectRatio(0.7)`, so its height is width-derived and
+ * the grid's row heights depend on it. A **smaller** glyph can only shrink the `Text`'s
+ * measured height (476 px → 235 px) against a box that is 539 px either way, so the rows
+ * cannot move — but the reason the clamp exists is unchanged, and neither `maxLines` nor the
+ * clip may be dropped on the grounds that the text is small now.
  */
-export const PLACEHOLDER_TITLE_SIZE: number = 24;
+export const PLACEHOLDER_TITLE_SIZE: number = 12;
 
 /**
  * How many lines of that title the placeholder will draw at most, in lines.
  *
- * Set from the measured box rather than from the appetite: five lines of 24 fp at the
- * device's own measured line box is 5 × 95.2 = 476 px inside the 512 px the padded box offers.
- * That 36 px of slack is what makes five the largest count that still leaves the block centred
- * with air above and below it; four would leave 136 px unused *and* would truncate a
- * 17-character title the box can actually hold.
+ * Set from the measured box rather than from the appetite: at 24 fp, five lines of the
+ * device's own measured line box was 5 × 95.2 = 476 px inside the 512 px the padded box
+ * offers. That 36 px of slack is what made five the largest count that still left the block
+ * centred with air above and below it; four would have left 136 px unused *and* would have
+ * truncated a 17-character title the box could actually hold.
+ *
+ * **r115 left this at five while the glyph halved.** At 12 fp the same five lines are
+ * 5 × 47.0 = 235 px, and the box could hold ten — so the clamp, not the box, is now what ends
+ * the block (the full arithmetic is on `PLACEHOLDER_TITLE_SIZE`). It is deliberately
+ * unchanged: the binding constraint moving does not make the block too tall, and lowering the
+ * count would truncate titles the box can hold for a benefit nobody asked for this round.
  *
  * Its other job is structural, and it is why this is a clamp rather than a hope: `maxLines`
  * bounds the `Text`'s **measured** height to that many line boxes, and the placeholder
  * `Column` clips, so a title of any length can neither move the box nor paint outside it. The
  * box cannot move regardless — it is `width('100%')` + `aspectRatio(0.7)`, so its height comes
  * from its width and not from its children (measured: 377 / 0.7 = 539 px) — but the clamp is
- * what keeps the *text* inside the cover rather than merely the cover the right size.
+ * what keeps the *text* inside the cover rather than merely the cover the right size. **A
+ * smaller glyph strengthens this rather than relaxing it**: the block is 476 px at 24 fp and
+ * 235 px at 12 fp, against a box that is 539 px either way.
  */
 export const PLACEHOLDER_TITLE_LINES: number = 5;
 

@@ -369,7 +369,10 @@ export struct ShelfPage {
           // it: a shelf of coverless books then reads as a wall of letters that does not name
           // anything, and the title below the box is 12 fp and truncated. The full title goes
           // in the cover instead, at `PLACEHOLDER_TITLE_SIZE` — one step down from the old 28,
-          // which is what 「字号比现在小一点」 asks for while the *text* is what got longer.
+          // which is what 「字号比现在小一点」 asks for while the *text* is what got longer, and
+          // then halved again by r115 on the same request repeated: 「封面上的书名可以再小一点，
+          // 先取现在的50%我看看。」 The second step is a deliberate departure from the project's
+          // 4.5:1 body-text floor in the sepia theme and is recorded on the token itself.
           //
           // ## Why this cannot move the cover box
           //
@@ -393,13 +396,17 @@ export struct ShelfPage {
               // `placeholderForeground`, not `mutedForeground`: the surface below is the
               // placeholder's own and is darker than `muted` in the light theme, which the
               // shared muted text colour does not survive (3.42:1). This pair measures
-              // 4.64:1 light / 5.49:1 dark / 3.92:1 sepia.
+              // 4.64:1 light / 5.49:1 dark / 3.92:1 sepia — and **since r115 the sepia figure
+              // is below the 4.5:1 floor with no large-text exemption covering it**, because
+              // the glyph is now 12 fp. That is a recorded, deliberate departure argued on
+              // `PLACEHOLDER_TITLE_SIZE`; it is not a bug and not a colour to "fix" here.
               .fontColor(this.palette.placeholderForeground)
               // Centre-aligned because the box is a cover and the title sits on it like a
               // cover's own lettering. It is also what keeps a *full* line off the 8 vp
-              // corner arc: a line of n characters is inset by (inner width − n × size) / 2,
-              // which at four 24 fp characters is ~4 vp of the padding plus the centring
-              // slack, not zero.
+              // corner arc: a line of n characters is inset by (inner width − n × size) / 2.
+              // At r115's size that is eight 12 fp characters, (350 − 324) / 2 = 13 px ≈ 3.9 vp
+              // of padding plus the centring slack, not zero — the same inset the four 24 fp
+              // characters gave, because eight half-size glyphs are as wide as four full ones.
               .textAlign(TextAlign.Center)
               .maxLines(PLACEHOLDER_TITLE_LINES)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
