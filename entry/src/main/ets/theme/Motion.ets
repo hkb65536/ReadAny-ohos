@@ -138,6 +138,40 @@ export enum AnimationSpeed {
 /** Duration in ms for each option, indexed by the option value. */
 export const ANIMATION_DURATIONS: number[] = [100, 300, 500, 0];
 
+/**
+ * Playback rate for each option, indexed by the option value — the speed setting's other
+ * output, for the one animation the setting cannot reach through `duration`.
+ *
+ * **Why a second table is needed at all.** Everything the app animates through
+ * `Motion.timing(...)` gets the selected duration. The 「书架」 title's collapse cannot: its
+ * curve is `curves.springMotion(...)`, and the SDK states plainly (and twice) that with a
+ * spring curve 「duration不生效，动画持续时间由弹簧曲线自身的物理参数…决定」 — the animation's
+ * length comes from the spring itself, so handing it 100/300/500 would be a number that reads
+ * as meaningful and is not. The same reference gives the setting that *does* work on a spring:
+ * `AnimateParam.tempo` (`common.d.ts:3439`, **`@since 7`**), 「动画播放速度」, default 1.0,
+ * where a larger value plays the same spring faster.
+ *
+ * So this table is the speed setting expressed in the one unit a spring understands, and it is
+ * deliberately **the same three-way choice** the picker already offers: the spring's own length
+ * is the "标准" baseline, 快速 plays it at 1.35× and 慢速 at 0.75×. The `off` entry is 0 and is
+ * never read — with the switch off `animateTo` is skipped entirely rather than handed a tempo,
+ * exactly as it is never handed `duration: 0`.
+ */
+export const ANIMATION_TEMPOS: number[] = [1.35, 1.0, 0.75, 0];
+
+/**
+ * The playback rate for a speed index, defaulting to Normal like `durationForSpeedIndex`.
+ *
+ * Same clamping contract, and for the same reason: an index written by an older or newer build
+ * must not read off the end of the table.
+ */
+export function tempoForSpeedIndex(index: number): number {
+  if (!Number.isInteger(index) || index < 0 || index >= ANIMATION_TEMPOS.length) {
+    return ANIMATION_TEMPOS[DEFAULT_ANIMATION_SPEED_INDEX];
+  }
+  return ANIMATION_TEMPOS[index];
+}
+
 /** One row of the picker. */
 export interface AnimationOption {
   speed: AnimationSpeed;
@@ -278,6 +312,20 @@ class MotionUtil {
    */
   duration(): number {
     return durationForSpeedIndex(this.speedIndex());
+  }
+
+  /**
+   * The selected playback rate, for the one animation a spring curve owns — see
+   * `ANIMATION_TEMPOS`, which carries why `duration` cannot serve it.
+   *
+   * Not `0` when the switch is off: `tempo: 0` means "no animation", which is a different thing
+   * from "no animation context", and the app's contract for off is the latter (the assignment is
+   * made outside `animateTo`). A caller that is gated on `animationOn` never reaches this with
+   * `off` selected; if one did, Normal's rate is the harmless answer.
+   */
+  tempo(): number {
+    const rate: number = tempoForSpeedIndex(this.speedIndex());
+    return rate > 0 ? rate : tempoForSpeedIndex(DEFAULT_ANIMATION_SPEED_INDEX);
   }
 
   /**

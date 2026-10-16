@@ -412,35 +412,38 @@ export const PLACEHOLDER_TITLE_LINES: number = 5;
 export const HEADER_TITLE_HIDE_OFFSET: number = 12;
 
 /**
- * The shortest upward scroll, in vp, at which the 书架 title is hidden.
+ * The shortest scroll position, in vp from the top, at which the 书架 title is hidden.
  *
- * **A band, not a comparator against the previous frame.** `onDidScroll` reports a frame delta, and
- * a rule that flipped the title on the sign of each delta would flicker on the finger's own jitter —
- * every reversal of a pixel would flip it back. So the decision reads the **cumulative** offset
- * against two different thresholds:
+ * **A band over the grid's scroll position, not a comparator against the previous frame.** r118/r119
+ * read a cumulative sum of `onDidScroll`'s per-frame deltas here, and that sum was the bug: it was
+ * floored at 0 and never decremented, so it was **monotonic** and the title could never return once
+ * hidden (the user's 「现在隐藏了就回不来了」). r120 reads `Scroller.currentOffset().yOffset` — the
+ * position itself, 0 at the top — so the top is reachable again by construction:
  *
  *   offset >= HIDE_THRESHOLD (24)  ->  hidden
- *   offset <= SHOW_AT            (12)  ->  shown
+ *   offset <= SHOW_AT        (12)  ->  shown
  *
  * and between them the title keeps whatever it had. 24 vp is about a third of the title bar's own
  * height, so a deliberate upward swipe hides it and a nudge does not. **The gap between the two
- * numbers is the hysteresis**, and the top of the list is inside the "shown" band — which is what
- * gives the title a way back that does not depend on the user reversing direction: `EdgeEffect.Spring`
- * returns the offset to 0 at the top, and 0 <= 12 restores it.
+ * numbers is the hysteresis**, and because the reading is a position, the top of the list is inside
+ * the "shown" band whether the user arrived there by reversing or by the spring settling — which is
+ * exactly the clause the user asked for (「等回到第一页的时候标题又显示回来」).
  *
- * **Why the threshold is on the offset rather than on the direction of travel.** r108 measured the
+ * **Why the threshold is on the position rather than on the direction of travel.** r108 measured the
  * shelf's own scroll range at ~857 px with a small library, so a user reaches the bottom — and stops
  * moving — after very little scrolling. A pure direction rule would leave the title hidden with no
- * gesture left that brings it back; an offset rule restores it at the top, where the user actually is.
+ * gesture left that brings it back; a position rule restores it at the top, where the user actually is.
  */
 export const HEADER_TITLE_HIDE_THRESHOLD: number = 24;
 
 /**
- * The offset at or below which the title is shown again, in vp. See the hysteresis note above.
+ * The position at or below which the title is shown again, in vp. See the hysteresis note above.
  *
- * Deliberately not 0: `Grid`'s spring edge effect overshoots and settles, and the settle passes
- * through values a little above zero. Matching at 12 vp means the title is already back by the time
- * the overshoot has finished, instead of waiting for an exact 0 that a spring may report a frame late.
+ * Deliberately not 0: the grid's spring edge effect overshoots and settles around the top, and the
+ * settle passes through values a little above zero. Matching at 12 vp means the title is already back
+ * by the time the overshoot has finished, instead of waiting for an exact 0 that a spring may report a
+ * frame late. Since r120 this is a position again, so unlike r118/r119 there is no accumulator that
+ * could fail to come back down to it.
  */
 export const HEADER_TITLE_SHOW_AT: number = 12;
 
@@ -451,7 +454,9 @@ export const HEADER_TITLE_SHOW_AT: number = 12;
  * to `animateTo`, and `ShelfPage` — which owns the title itself — must not invent a second pair and
  * drift. The shape is the reader's two floating bars' (`ReaderView.toggleBars`): a spring, because a
  * title receding and returning is the same kind of movement as a bar sliding, and because a spring
- * settles with a little physical overshoot where an ease stops dead.
+ * settles with a little physical overshoot where an ease stops dead. Measured, not assumed: an
+ * on-device frame burst through the collapse caught a partially faded title (2229 dark pixels against
+ * 8770 before) and the search row part way to its destination, so the transition is real.
  *
  * The numbers are this element's own and not the reader's. That bar travels 30 vp at full page width;
  * this title travels `HEADER_TITLE_HIDE_OFFSET` (12 vp) inside a 359 vp header, and the reader's
@@ -460,7 +465,9 @@ export const HEADER_TITLE_SHOW_AT: number = 12;
  *
  * **No `duration` accompanies these.** The SDK states that with a spring curve the animation's length
  * comes from the spring's own physical parameters (「使用弹簧曲线时，duration 不生效」), so passing one
- * would be a number that reads as meaningful and is not.
+ * would be a number that reads as meaningful and is not. The speed setting reaches this motion through
+ * `AnimateParam.tempo` instead — see `Motion.ANIMATION_TEMPOS`, which carries why that is the only
+ * parameter of the three that acts on a spring.
  */
 export const HEADER_TITLE_RESPONSE: number = 0.45;
 export const HEADER_TITLE_DAMPING: number = 0.85;

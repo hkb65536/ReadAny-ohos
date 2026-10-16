@@ -306,7 +306,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r119 (header-collapse-and-clear-actions)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r120 (shelf-title-return-and-tempo)';
 
 /**
  * A byte count as something a person can read.
@@ -662,41 +662,70 @@ struct Index {
   /**
    * Whether the 「书架」 title is hidden because the shelf has been scrolled up.
    *
-   * The user's third ask (「我还想上划的时候就隐藏"书架"标题」). **This field is the single writer of
-   * that decision**: `ShelfPage` measures the grid's scroll and hands the two numbers here
-   * (`onTitleScroll`), and this is where the thresholds are applied, because the title's state and the
-   * rule that flips it belong in one place. `ShelfPage` renders from it and never writes it.
+   * The user's third ask (「我还想上划的时候就隐藏"书架"标题」), sharpened in r120 to the rule they
+   * actually stated (「隐藏的逻辑应该是往上滑动看下面的书的时候隐藏，等回到第一页的时候标题又显示回来」).
+   * **This field is the single writer of that decision**: `ShelfPage` measures the grid's scroll
+   * **position** and hands that one number here (`onTitleScroll`), and this is where the thresholds are
+   * applied, because the title's state and the rule that flips it belong in one place. `ShelfPage`
+   * renders from it and never writes it.
    *
-   * ## The rule, and why it is a band rather than a comparator
+   * ## The rule (r120), and why it reads a position rather than an accumulated delta
    *
-   * `onDidScroll` reports a **per-frame** delta, so a rule that flipped the title on the sign of each
-   * delta would flicker on the finger's own jitter — every reversal of one pixel flipping it back.
-   * The decision therefore reads the **cumulative** offset against two different thresholds, and
-   * between them the title keeps whatever it had:
+   * `onDidScroll` reports a **per-frame** delta, so r118/r119 compared the sign of each frame against
+   * a cumulative sum of those deltas. That sum is where the bug was: it was **floored at 0 and never
+   * decremented**, `` `offset = Math.max(0, offset + delta)` `` in effect, so it is monotonic. Once it
+   * passed `HEADER_TITLE_HIDE_THRESHOLD` no later frame could bring it back under
+   * `HEADER_TITLE_SHOW_AT`, and the title could never return — exactly what the user reported
+   * (「现在隐藏了就回不来了」). Verified on the device: one upward scroll leaves the header collapsed
+   * through any number of downward ones, and only relaunching the app restores it.
    *
-   *   moved up  and offset >= HEADER_TITLE_HIDE_THRESHOLD (24 vp)  ->  hide
-   *   moved down or offset <= HEADER_TITLE_SHOW_AT (12 vp)         ->  show
+   * The position now comes from `Scroller.currentOffset()` (`scroll.d.ts:467`, `@since 7`), whose
+   * `yOffset` is the vertical scroll offset **in vp** and is 0 at the top of the list. An absolute
+   * reading makes the top reachable again by construction, which is the property no accumulation of
+   * deltas can have.
    *
-   * So it reappears on **either** a downward scroll **or** a return to the top, which is deliberately
-   * both: r108 measured this grid's whole scroll range at ~857 px with a small library, so a user can
-   * reach the bottom and stop after very little movement. A rule that only restored the title on a
-   * reversal would leave it hidden with no gesture left that brings it back; the top of the list is
-   * where the user actually is when that happens, and the grid's own spring edge effect returning the
-   * offset to 0 puts it inside the 12 vp band on its own. (The enum's name is deliberately not
-   * spelled here: `verify-motion.mjs` asserts that no page carries an unconditional edge-effect
-   * literal, and it scans comments as well as code.)
+   * The rule is then a **band with hysteresis over that position**, and both of the user's clauses are
+   * in it: 「往上滑动看下面的书的时候隐藏」 is the hide side, 「等回到第一页的时候标题又显示回来」 is
+   * the `offset <= SHOW_AT` side, which is why the top of the list shows the title **whatever the
+   * direction of travel was**:
+   *
+   *   offset >= HIDE_THRESHOLD (24 vp)  ->  hidden
+   *   offset <= SHOW_AT        (12 vp)  ->  shown
+   *   between them                      ->  whatever it already was
+   *
+   * Between the two numbers the title keeps its state, so the decision cannot flicker on the finger's
+   * own jitter. The show side deliberately does **not** require a downward scroll: r108 measured this
+   * grid's whole scroll range at ~857 px with a small library, so a user can reach the bottom — and
+   * stop — after very little movement, and a rule that only restored the title on a reversal would
+   * strand it hidden with no gesture left that brings it back. That is also why the top of the list
+   * must win unconditionally, and it now does.
    */
   @State private shelfTitleHidden: boolean = false;
 
   /**
-   * Apply the 「书架」 title's hide/show rule to one frame of the shelf's scroll.
+   * Whether the title should be hidden at a given scroll position — **the whole rule, in one place.**
    *
-   * Called by `ShelfPage` through the injected `onTitleScroll`, with `up` the direction of travel and
-   * `offset` the cumulative distance from the top in vp. The thresholds and the reasoning are on
-   * `shelfTitleHidden`; this method is only the decision, and the animation is the next method.
+   * A named function rather than an expression inlined into `onShelfTitleScroll`, so the property the
+   * user cares about can be asserted and mutation-tested directly: at the top of the list
+   * (`offset === 0`) this returns `false` for **every** other argument, which is precisely what r119
+   * could no longer do.
    */
-  private onShelfTitleScroll(up: boolean, offset: number): void {
-    const shouldHide: boolean = !(offset <= HEADER_TITLE_SHOW_AT) && (up || this.shelfTitleHidden);
+  private shelfTitleShouldHide(offset: number): boolean {
+    if (offset <= HEADER_TITLE_SHOW_AT) {
+      return false;
+    }
+    return offset >= HEADER_TITLE_HIDE_THRESHOLD;
+  }
+
+  /**
+   * Apply the 「书架」 title's hide/show rule to the shelf's current scroll position.
+   *
+   * Called by `ShelfPage` through the injected `onTitleScroll` with the grid's **position** in vp
+   * (0 at the top). The thresholds and the reasoning are on `shelfTitleHidden`; this method is only
+   * the decision, and the animation is the next method.
+   */
+  private onShelfTitleScroll(offset: number): void {
+    const shouldHide: boolean = this.shelfTitleShouldHide(offset);
     if (shouldHide === this.shelfTitleHidden) {
       return;
     }
@@ -722,14 +751,25 @@ struct Index {
    *
    * The user corrected that arrangement (「我不是只想文字消失，我是想那块区域也消失。也就是说…搜索框、
    * 同步按钮和导入按钮要顶到现在标题的框的位置。」), and the objection does not survive the hysteresis:
-   * this method is only reached from `onShelfTitleScroll`, which reads a **cumulative** offset against
-   * two thresholds 12 vp apart, so the flag — and therefore the layout — changes **once per crossing**
-   * and never per frame. `ShelfPage.headerTitle` carries the rest, including why a taller grid *box* is
-   * not r109's re-pagination: the rows there are height-derived from the column width and the grid still
-   * has no bottom padding.
+   * this method is only reached from `onShelfTitleScroll`, which reads the **position** against two
+   * thresholds 12 vp apart, so the flag — and therefore the layout — changes **once per crossing** and
+   * never per frame. `ShelfPage.headerTitle` carries the rest, including why a taller grid *box* is not
+   * r109's re-pagination: the rows there are height-derived from the column width and the grid still has
+   * no bottom padding.
    *
-   * So `animateTo` now tweens a height as well, and it is the only height it tweens — the header's own
-   * height and the title row's, from the one pair of helpers on `ShelfPage`.
+   * So `animateTo` tweens a height as well, and it is the only height it tweens — the header's own height
+   * and the title row's, from the one pair of helpers on `ShelfPage`.
+   *
+   * ## The transition is real, and it was measured (r120)
+   *
+   * The user asked for a transition (「我还想加过渡动画」), which reads as "there is not one". There is:
+   * an on-device frame burst through the collapse (device-side `snapshot_display`, ~320 ms per frame)
+   * caught the title at **8770 dark pixels in `before`**, **2229 mid-transition in the very next frame**
+   * — a partially faded, partially moved state that no snap can produce — and the settled value
+   * **169** for the search field's top edge against **291** before, a 122 px move. The far larger part of
+   * what the user saw is the bug: once hidden the title never came back, so the return half of the
+   * transition was unreachable and the one collapse they got was easy to miss. `shelfTitleHidden`
+   * carries the fix.
    *
    * ## `animationOn` is the gate, and "off" means no tween at all
    *
@@ -738,6 +778,16 @@ struct Index {
    * assignment is made directly, outside any animation context, and the title **snaps** — `animateTo`
    * is skipped, not handed `duration: 0`, which would still open an animation context and still run a
    * frame of interpolation. Same rule, same spelling as `ReaderView.toggleBars`.
+   *
+   * ## `tempo`, not `duration` (r120), because a spring ignores a duration
+   *
+   * `AnimateParam.duration` 「在…curve配置springMotion…时…不生效」 (`common.d.ts:3413-3415`), so the speed
+   * setting used to have no way to reach this animation at all — it was fixed at the spring's own
+   * length whatever the user chose. `AnimateParam.tempo` (`common.d.ts:3439`, `@since 7`) is the
+   * setting that *does* act on a spring, and `Motion.tempo()` maps the same three-way picker onto it
+   * (`ANIMATION_TEMPOS`). So 「界面动效 · 快速/标准/慢速」 now reaches this motion the way it reaches
+   * every other one, and the spring's own physics — the thing that makes it read as the reader's bars'
+   * sibling — is kept rather than traded for an ease.
    */
   private applyShelfTitleHidden(hidden: boolean): void {
     const apply: () => void = (): void => {
@@ -746,7 +796,8 @@ struct Index {
     if (this.animationOn) {
       this.getUIContext().animateTo({
         // Inert beside a spring curve — the SDK states a spring animation's length comes from the
-        // spring's own physical parameters — so no `duration` is passed.
+        // spring's own physical parameters — so no `duration` is passed. `tempo` is not inert.
+        tempo: Motion.tempo(),
         curve: curves.springMotion(HEADER_TITLE_RESPONSE, HEADER_TITLE_DAMPING),
       }, apply);
     } else {
@@ -2352,10 +2403,12 @@ struct Index {
         // through the header now, and it is still the shell's one measurement.
         topInsetVp: this.shellTopInsetVp,
         // Whether the title is currently hidden. Written by `onShelfTitleScroll` below; the page only
-        // renders from it, and only ever through `opacity` and `translate`.
+        // renders from it, and its height, opacity and translate are all derived from it.
         titleHidden: this.shelfTitleHidden,
-        onTitleScroll: (up: boolean, offset: number): void => {
-          this.onShelfTitleScroll(up, offset);
+        // The grid's scroll **position** in vp, 0 at the top of the list — not a delta. The page
+        // reads it from its own `Scroller`; r119's accumulated delta is what could not return.
+        onTitleScroll: (offset: number): void => {
+          this.onShelfTitleScroll(offset);
         },
         // The two things the header's sync button needs, and the reason both come from the shell:
         // `syncBusy` is the same field the 设置 → 同步 page disables its own buttons on, and

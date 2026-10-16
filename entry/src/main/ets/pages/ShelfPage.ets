@@ -205,31 +205,45 @@ export struct ShelfPage {
   onOpen: (book: Book) => void = (): void => {};
   onReload: () => Promise<void> = async (): Promise<void> => {};
   /**
-   * Report the grid's scroll direction and position so the shell can hide the 「书架」 title.
+   * Report the grid's scroll position so the shell can hide the 「书架」 title.
    *
    * **The decision is the shell's, the measurement is this page's.** The grid is what scrolls, so it
-   * is the only thing that can say which way the user is moving; but the rule that turns that into
+   * is the only thing that can say where the user is in the list; but the rule that turns that into
    * "the title is hidden" belongs beside the title's own state, in `Index`, for the same reason
    * `onSync` is injected rather than called directly — a second place that decided it could disagree
    * with the first.
    *
-   * `up` is true when this frame moved the content further from the top, and `offset` is the
-   * cumulative scroll distance in vp. Both are passed rather than one derived flag, so the hysteresis
-   * (see `HEADER_TITLE_HIDE_THRESHOLD`) lives in exactly one place.
+   * `offset` is the grid's **current scroll position** in vp, from `Scroller.currentOffset()`, and it
+   * is 0 at the top of the list. The position — not a per-frame delta — is what is handed up, because
+   * the rule the user asked for is expressed in positions: 「隐藏的逻辑应该是往上滑动看下面的书的时候
+   * 隐藏，等回到第一页的时候标题又显示回来」. A delta cannot express "back at the first page" at all;
+   * only a position can, and an accumulator of deltas cannot either (see `gridScroller`).
+   *
+   * The direction of this frame's travel is deliberately **not** handed up. The rule r120 lands on is
+   * a pure function of the position, so a second input could only disagree with it. The hysteresis
+   * (see `HEADER_TITLE_HIDE_THRESHOLD`) still lives in exactly one place, and that place is `Index`.
    */
-  onTitleScroll: (up: boolean, offset: number) => void = (up: boolean, offset: number): void => {};
+  onTitleScroll: (offset: number) => void = (offset: number): void => {};
   /**
-   * The grid's scroll offset, in vp, accumulated from `onDidScroll`'s per-frame deltas.
+   * The grid's scroller — **the only source of the shelf's scroll position.**
    *
-   * `onDidScroll` reports **how far this frame moved**, not where it is, so the absolute position has
-   * to be accumulated. It is a plain field rather than `@State`: nothing renders from it — it is the
-   * only input to the direction test above — and making it state would re-render the whole grid on
-   * every frame of every scroll.
+   * r118/r119 accumulated `onDidScroll`'s per-frame deltas into a plain field, and that accumulation
+   * is what r120 removes: an accumulator that only ever adds is **monotonic**, so once it passed the
+   * hide threshold no later frame could bring it back and the 「书架」 title could never return. The
+   * user's report is exactly that symptom (「现在隐藏了就回不来了」), and it was reproduced on the
+   * device before this change — one upward scroll leaves the header collapsed through any number of
+   * downward ones, and only relaunching the app restores it.
    *
-   * A stale value is self-correcting rather than sticky: the grid is re-created when the book list is
-   * replaced, so the accumulator is reset in `aboutToAppear` alongside the covers.
+   * `currentOffset(): OffsetResult` (`scroll.d.ts:467`, **`@since 7`**) is the position itself:
+   * `OffsetResult.yOffset` is the vertical scroll offset **in vp** and is 0 at the top of the list.
+   * Because it is an absolute reading rather than a sum, the top of the list is reachable again by
+   * definition — which is the property the accumulator could not have.
+   *
+   * `Grid(scroller?: Scroller, ...)` takes it as its first parameter (`ts-container-grid`), and a
+   * `Scroller` may be bound to exactly one scrollable component — this page owns exactly one, and
+   * `Index` owns none.
    */
-  private scrollOffsetVp: number = 0;
+  private gridScroller: Scroller = new Scroller();
   /**
    * Perform an already-confirmed deletion of one book.
    *
@@ -392,9 +406,6 @@ export struct ShelfPage {
 
   aboutToAppear(): void {
     this.refreshCovers();
-    // The accumulator is a plain field, so it is not reset for free when the component is rebuilt
-    // for a new book list. See `scrollOffsetVp`.
-    this.scrollOffsetVp = 0;
     // The material question is asked here rather than at construction — see `headerMaterial`.
     this.headerMaterial = headerBarMaterialOption();
   }
@@ -403,40 +414,37 @@ export struct ShelfPage {
    * Feed one frame of the grid's scroll to the shell's hide/show rule.
    *
    * `onDidScroll(handler: OnScrollCallback)` — `common.d.ts:25435`, **`@since 12`**, with the
-   * callback `(scrollOffset: number, scrollState: ScrollState)`. Two things about it are
-   * load-bearing here and both come from the declaration rather than from a guess:
+   * callback `(scrollOffset: number, scrollState: ScrollState)`. Two things about it are load-bearing
+   * here and both come from the declaration rather than from a guess:
    *
    *  - **`scrollOffset` is the offset of *this frame*, signed** — the declaration says
-   *    "scrollOffset is offset per frame scrolling" (`common.d.ts:25400`). It is not a position, so
-   *    the cumulative distance is accumulated here and that sum is what the shell's thresholds are
-   *    compared against.
+   *    "scrollOffset is offset per frame scrolling" (`common.d.ts:25400`). It is a delta, so it is
+   *    **not** what drives the rule; see below.
    *  - **`onScroll` is the wrong API for this.** It is `@since 11`, **deprecated since 12**, and its
-   *    `@useinstead` is exactly this method (`common.d.ts:25407-25408`). The deprecated callback also
-   *    takes no `ScrollState`, which is the second reason not to use it: without the state there is
-   *    no way to tell a user's drag from the spring's own settle.
+   *    `@useinstead` is exactly this method (`common.d.ts:25407-25408`). The callback is still the
+   *    right *trigger* — it is the frame clock — even though its argument is not the value the rule
+   *    reads.
    *
-   * **Positive is up.** The grid's content moves up the screen as the user reads further down, and
-   * that is the direction the user's 「上划」 names — so `movedUp` is `delta > 0` and it means the
-   * content travelled upward, i.e. the reader is scrolling toward the end of the list.
+   * **The position comes from the scroller, not from the argument.** `onDidScroll` is used here only
+   * as "a frame happened"; `this.gridScroller.currentOffset().yOffset` is the value reported upward.
+   * r118/r119 summed the deltas instead and that sum was monotonic (it was floored at 0 and never
+   * decremented), so the title could never come back — the user's bug. `scroll.d.ts:1393` also fixes
+   * the argument's sign: 「Scroll中的内容向上滚动时偏移量为正，向下滚动时偏移量为负」, which matches the
+   * offset r118 documented and is a second reason not to re-derive a position from it.
    *
-   * **`ScrollState` is deliberately not branched on.** The trigger the user asked for is 「上划的时候」
-   * — a direction, not a gesture phase — so a fling, a drag and a programmatic move all obey the same
-   * rule, and letting go of the list does not change what is on screen. `ScrollState` carries no
-   * direction of its own (Idle/Scroll/Fling), so it could not express this rule even if it were used.
+   * **`ScrollState` is deliberately not branched on.** The trigger the user asked for is 「上划的时候
+   * 隐藏，等回到第一页的时候显示」 — a position, not a gesture phase — so a fling, a drag and a
+   * programmatic move all obey the same rule, and letting go of the list does not change what is on
+   * screen. `ScrollState` carries no direction of its own (Idle/Scroll/Fling), so it could not express
+   * this rule even if it were used.
    */
-  private handleGridScroll(delta: number): void {
-    if (!Number.isFinite(delta) || delta === 0) {
+  private handleGridScroll(): void {
+    const offset: OffsetResult = this.gridScroller.currentOffset();
+    const position: number = offset === undefined ? 0 : offset.yOffset;
+    if (!Number.isFinite(position)) {
       return;
     }
-    this.scrollOffsetVp += delta;
-    if (this.scrollOffsetVp < 0) {
-      // A spring overshoot at the top reports a negative cumulative sum. Clamped so the accumulator
-      // stays a distance from the top rather than drifting below it. (The comment deliberately does
-      // not spell the enum's name: `verify-motion.mjs` asserts that no page carries an unconditional
-      // edge-effect literal, and it scans comments too.)
-      this.scrollOffsetVp = 0;
-    }
-    this.onTitleScroll(delta > 0, this.scrollOffsetVp);
+    this.onTitleScroll(position);
   }
 
   /**
@@ -1734,7 +1742,14 @@ export struct ShelfPage {
         .width('100%')
         .layoutWeight(1)
       } else {
-        Grid() {
+        // The scroller is bound here so the page can read the grid's **position** rather than
+        // summing deltas — see `gridScroller`, which carries the bug that made this necessary.
+        // `Grid(scroller?: Scroller, layoutOptions?: GridLayoutOptions)` takes it **positionally**
+        // (`ts-container-grid`: 「接口Grid(scroller?: Scroller, layoutOptions?: GridLayoutOptions)创建
+        // 网格容器」) — not as the `{ scroller: … }` object `List` takes. The compiler is what settled
+        // that: the object form fails with "Argument of type '{ scroller: Scroller; }' is not
+        // assignable to parameter of type 'Scroller'".
+        Grid(this.gridScroller) {
           ForEach(this.books, (book: Book, index: number) => {
             GridItem() {
               this.bookCell(book)
@@ -1794,10 +1809,11 @@ export struct ShelfPage {
         // shelf stretching past its last row and springing back.
         .edgeEffect(Motion.edgeEffect())
         // Feeds the 「书架」 title's hide/show rule. `handleGridScroll` carries the declaration
-        // (`@since 12`), why it is `onDidScroll` rather than the deprecated `onScroll`, and why the
-        // callback is not branched on `ScrollState`.
+        // (`@since 12`), why it is `onDidScroll` rather than the deprecated `onScroll`, why the
+        // callback is not branched on `ScrollState`, and why its argument is *not* the value the rule
+        // reads — the frame clock is the trigger, the scroller's `currentOffset()` is the position.
         .onDidScroll((scrollOffset: number, scrollState: ScrollState): void => {
-          this.handleGridScroll(scrollOffset);
+          this.handleGridScroll();
         })
         .onAreaChange((oldValue: Area, newValue: Area): void => {
           const width: number = Number(newValue.width);
