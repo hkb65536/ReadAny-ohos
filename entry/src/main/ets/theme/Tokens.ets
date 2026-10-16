@@ -242,6 +242,50 @@ export const MENU_TRIGGER_INSET: number = 8;
 export const MENU_TRIGGER_GAP: number = 8;
 
 // ---------------------------------------------------------------------------
+// Reading progress on the cover
+// ---------------------------------------------------------------------------
+
+/**
+ * Thickness of the reading-progress bar drawn along the bottom edge of a book's cover, in vp.
+ *
+ * The bar used to be a **sibling under the caption** in the cell `Column`,
+ * `Progress({ ... type: ProgressType.Linear }).width('100%').height(3)` with no `.style()`. r117
+ * moved it into the cover `Stack` at the user's request (「把主界面里显示阅读进度的那个进度条移到
+ * 书的封面上，可以再细一点，放在封面的最下面」) and this token is both its height and its stroke.
+ *
+ * ## The old bar was 4 vp of ink, not 3 — which is why this token has to set the stroke
+ *
+ * `LinearStyleOptions.strokeWidth` defaults to **4.0 vp**
+ * (`ets/component/progress.d.ts`, `LinearStyleOptions`: "Stroke width of the progress indicator.
+ * Default value: **4.0vp**"). The old call site set only the component's height, so its **node**
+ * was 3 vp — the r108 layout dump measures exactly that, `10.125 px` at 3.375 px/vp — while the
+ * indicator actually painted inside it was the 4 vp default, overflowing its own box by 0.5 vp top
+ * and bottom. **「可以再细一点」 therefore could not be delivered by shrinking the box**: a bar with
+ * `.height(2)` and no `.style()` would still have been drawn 4 vp thick. The token is read twice at
+ * the one call site — `.height(COVER_PROGRESS_HEIGHT)` and
+ * `.style({ strokeWidth: COVER_PROGRESS_HEIGHT })` — so the box and the ink cannot drift apart, and
+ * `verify-book-menu.mjs` asserts both spellings come from this name.
+ *
+ * ## Why 2
+ *
+ * Half of the 4 vp that was really on screen, so the request is answered against what the user saw
+ * rather than against the node's nominal height. On the reference device that is 6.75 px — still
+ * four times a comfortable hairline, and legible as a fraction of a bar 159.6 vp tall. It also has
+ * to stay **at or below `MENU_TRIGGER_INSET`**: the `⋯` control's 48 vp tap box is anchored to the
+ * cover's bottom-right corner and inset 8 vp inward, so its bottom edge sits `MENU_TRIGGER_INSET`
+ * above the cover's bottom edge, and a bar thicker than that would run into it. 2 ≤ 8 leaves 6 vp of
+ * clear air, and the inequality is asserted rather than asserted-in-prose.
+ *
+ * ## It cannot move the row
+ *
+ * The bar is a child of the cover `Stack`, which is `width('100%')` + `aspectRatio(0.7)`: its height
+ * comes from its width, and an overlay adds none. The cover is `RADIUS_IMAGE`-rounded and now
+ * `clip(true)` for the bar's sake — a full-width bar flush with the bottom edge would otherwise
+ * paint its top row up to ~2.7 vp beyond the rounded silhouette at each end.
+ */
+export const COVER_PROGRESS_HEIGHT: number = 2;
+
+// ---------------------------------------------------------------------------
 // Coverless placeholder
 // ---------------------------------------------------------------------------
 

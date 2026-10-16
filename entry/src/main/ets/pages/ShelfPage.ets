@@ -1,12 +1,12 @@
 import { InkBoatError } from 'core';
 import { LengthMetrics, SymbolGlyphModifier } from '@kit.ArkUI';
 import type { ThemePalette } from '../theme/Theme';
-import type { Book, BookSort } from 'data';
-import { BookSort as Sort } from 'data';
+import type { Book } from 'data';
 import {
   FLOATING_BAR_CLEARANCE,
   menuMaterialOption,
   menuTriggerBackground,
+  MIN_TAP_TARGET,
   RADIUS_CONTROL,
   RADIUS_IMAGE,
   shelfColumnsForWidth,
@@ -19,6 +19,7 @@ import {
   TYPE_TITLE,
 } from '../theme/Theme';
 import {
+  COVER_PROGRESS_HEIGHT,
   MENU_TRIGGER_GAP,
   MENU_TRIGGER_GLYPH_SIZE,
   MENU_TRIGGER_INSET,
@@ -28,6 +29,7 @@ import {
   MENU_WIDTH_UNMEASURED,
   PLACEHOLDER_TITLE_LINES,
   PLACEHOLDER_TITLE_SIZE,
+  ROW_ICON_SIZE,
 } from '../theme/Tokens';
 import { MOTION_ON_KEY, Motion, transitionOrIdentity } from '../theme/Motion';
 
@@ -84,6 +86,23 @@ const SHELF_COLUMNS_GAP: number = 12;
  * *inward* from it, so it is contained at every card width; `coverMenuTrigger` carries the
  * arithmetic.
  *
+ * ## The sort control is gone, and this is what it cost
+ *
+ * The header row used to hold a single cycling sort button — `Button(sortLabel(this.sort))`, whose
+ * label was the order currently in force (「最近阅读」 by default), stepping through five of them with
+ * `nextSort`. r117 deleted it at the user's request
+ * (「把主界面的"最近阅读"按钮删了，换成...」), and the whole of its wiring went with it: the button,
+ * `nextSort`, `sortLabel`, and the `@Link sort` this page was handed (the rule r109 applied to
+ * `AnnotationsPage`'s dead `bottomInsetVp` — a prop nothing reads is deleted together with the
+ * argument that fed it).
+ *
+ * **The functionality it removes is real and is not hidden: the shelf can no longer be re-ordered at
+ * all.** `Index.shelfSort` still exists and is still what the repository query sorts by, but nothing
+ * on screen writes it any more, so the shelf is permanently 最近阅读-first — 最近添加 / 按书名 /
+ * 按作者 / 按进度 are unreachable. Nothing persists the choice, so no unreachable stored state is left
+ * behind; the four orders are simply no longer selectable. Reading the shelf still *sorts* (by
+ * `lastOpenedAt`, descending), which is why this is a lost control rather than a lost feature.
+ *
  * ## Deleting
  *
  * 删除 does not delete anything by itself: it opens the confirmation ReadAny shows,
@@ -129,7 +148,29 @@ export struct ShelfPage {
   @Prop bottomInsetVp: number = 0;
   /** Search text, applied to title and author by the repository query. */
   @Link search: string;
-  @Link sort: BookSort;
+  /**
+   * Whether a sync pass is running, mirrored from the shell.
+   *
+   * **This is the shell's own `syncBusy` (`Index.ets`), not a second flag.** It is the same field the
+   * 设置 → 同步 page's 同步 button and its 全量上传 / 全量下载 buttons disable themselves on, so the
+   * two surfaces cannot disagree about whether a pass is in flight, and the shelf's button needs no
+   * state of its own. It is a `@Prop` rather than a `@Link` because this page only reads it.
+   *
+   * `false` is the idle value, which is why it is the default: the shelf renders before any pass and
+   * must render as idle rather than as busy.
+   */
+  @Prop syncBusy: boolean = false;
+
+  /**
+   * Start one ordinary sync pass, or do nothing.
+   *
+   * Injected rather than called directly for the same reason `onDelete` is: `runSync` owns the shell's
+   * progress card, its summary line and the shelf reload that follows a pass, and a page that reached
+   * into the service would be a second place that decides what a sync writes. The shell hands in
+   * `Index.runSync(SyncMode.NORMAL)` — the identical call the 设置 → 同步 page's 同步 button makes, so
+   * the shelf's button triggers what exists rather than a new path.
+   */
+  onSync: () => void = (): void => {};
 
   onImport: () => Promise<void> = async (): Promise<void> => {};
   onOpen: (book: Book) => void = (): void => {};
@@ -432,10 +473,75 @@ export struct ShelfPage {
           .backgroundColor(this.palette.placeholderSurface)
         }
 
+        // ## The reading progress, on the cover's bottom edge (r117)
+        //
+        // It used to be a **sibling under the caption**, a `Progress` of its own in the cell
+        // `Column`. The user asked for it on the cover instead, thinner, at the very bottom
+        // (「把主界面里显示阅读进度的那个进度条移到书的封面上，可以再细一点，放在封面的最下面」),
+        // and this is that bar: a child of the cover `Stack`, so it is an **overlay** and takes no
+        // part in the cell's height.
+        //
+        //  - **Placement: flush with the cover's bottom edge, full width.** That is what 「封面的最
+        //    下面」 says, and a bar is the cover's own edge — an inset would leave a strip of cover
+        //    below it with nothing in it. `Stack`'s `alignContent: Alignment.BottomEnd` puts this
+        //    full-width child on that edge without a per-child alignment.
+        //  - **Thickness: `COVER_PROGRESS_HEIGHT` (2 vp), for both the box and the stroke.** The old
+        //    bar set only `.height(3)` and left `LinearStyleOptions.strokeWidth` at its 4 vp default,
+        //    so the ink on screen was 4 vp while the node was 3 — the token carries the whole
+        //    argument, including why shrinking the box alone would not have made it thinner.
+        //  - **The track is set, not left to the framework — and the track is load-bearing.**
+        //    `Progress`'s own default background is a system colour, and this bar is drawn over *cover
+        //    art* — any image at all. The pair is the one the shell's sync bar already uses
+        //    (`.color(primary)` on `.backgroundColor(muted)`, `Index.syncProgressDeterminate`), so the
+        //    app has one progress idiom rather than two, and the fill's separation is a palette pair
+        //    rather than a composite over an unknown image. Measured fill-on-track: light 15.900:1,
+        //    dark 14.353:1, sepia 5.600:1 — every one above the 4.5:1 floor as well as the 3:1 graphical
+        //    one; on a coverless book's placeholder the same fill measures 12.410 / 14.353 / 5.600:1.
+        //    `verify-themes.mjs` re-derives all of them.
+        //
+        //    The **opaque** track is what makes an arbitrary cover safe, because the fill alone is not:
+        //    a white fill on a white cover (dark theme) or a near-black fill on a dark cover (light
+        //    theme) is invisible where it lies. With both drawn, one of the two always reads against the
+        //    art — the unfilled remainder is `#2A2A2A` in the theme whose fill is white, and `#F3F3EF`
+        //    in the theme whose fill is near-black — so the boundary between them still marks the
+        //    progress in the case where the fill itself vanishes. A transparent track would throw that
+        //    property away, which is the whole reason this is not simply `.color(...)`.
+        //  - **It cannot reach the `⋯` control.** That control's tap box is anchored to the cover's
+        //    bottom-right corner and inset `MENU_TRIGGER_INSET` (8) inward, so its bottom edge is 8 vp
+        //    above the cover's bottom edge while this bar occupies the bottom 2 vp: 6 vp of clear air,
+        //    and `verify-book-menu.mjs` evaluates `COVER_PROGRESS_HEIGHT <= MENU_TRIGGER_INSET` rather
+        //    than trusting this sentence.
+        //  - **Why the cover `Stack` clips.** A full-width bar at the very bottom of an
+        //    `RADIUS_IMAGE`-rounded box would paint its top row up to ~2.7 vp *outside* the rounded
+        //    silhouette at each end — a dark sliver on the page beside the cover's corner. The SDK's
+        //    own rule is that a radius clips with `clip` ("设置圆角后，可搭配 clip 属性进行裁剪，避免子组
+        //    件超出组件自身"), so the `Stack` carries the radius and the clip. Both the `⋯` box (inset 8
+        //    vp, 48 vp) and the placeholder's own box are inside it, so nothing else is cut.
+        //
+        // The gate is unchanged and deliberate: a bar is shown only when there is progress to show.
+        // **The percentage below is not gated**, and that is what makes the row height independent of
+        // whether a book has been opened — with the bar out of the `Column`, the only progress-shaped
+        // thing left in it is a single line of text that is always present.
+        if (book.progress > 0.001) {
+          Progress({ value: book.progress * 100, total: 100, type: ProgressType.Linear })
+            .width('100%')
+            .height(COVER_PROGRESS_HEIGHT)
+            // The stroke is the bar's thickness too, from the same name: the default is 4 vp, which
+            // is thicker than this box, and an indicator wider than its box is painted overflowing it.
+            .style({ strokeWidth: COVER_PROGRESS_HEIGHT })
+            .color(this.palette.primary)
+            .backgroundColor(this.palette.muted)
+        }
+
         this.coverMenuTrigger(book)
       }
       .width('100%')
       .aspectRatio(0.7)
+      // `RADIUS_IMAGE` + `clip`: the cover's own shape, and the reason the progress bar above cannot
+      // paint past it. The radius was already on the `Image` and the placeholder; it is on the box
+      // that carries the ratio now so the *overlay* is bounded by the same silhouette.
+      .borderRadius(RADIUS_IMAGE)
+      .clip(true)
 
       Text(book.title.length > 0 ? book.title : '未命名')
         // `TYPE_CAPTION`, the theme's caption step, rather than the bare `12` this was:
@@ -461,19 +567,60 @@ export struct ShelfPage {
         // width of its own.
         .width('100%')
 
-      // Progress is shown only when there is some: a 0% bar on every unread book
-      // is noise rather than information.
-      if (book.progress > 0.001) {
-        Progress({ value: book.progress * 100, total: 100, type: ProgressType.Linear })
-          .width('100%')
-          .height(3)
-      }
+      // ## The reading percentage, where the bar used to be (r117)
+      //
+      // 「然后在现在显示进度条的地方显示百分比」 — the bar's old slot in this `Column` now carries the
+      // number the bar drew. `book.progress` is a **fraction, 0–1** (`data/Types.ets`:
+      // "Reading progress, 0-1"; `Books.updateReadingPosition` clamps it into that range on write), and
+      // `progressLabel` turns it into `N%` with the same `Math.round(ratio × 100)` the shell's sync card
+      // uses, so "35%" means the same thing on both surfaces. 0 → 「0%」, 1 → 「100%」.
+      //
+      // **It is drawn for every book, including one that has never been opened.** Two reasons, and the
+      // second is the load-bearing one: a read-out of 0 % is what the value actually is, and gating the
+      // line on `progress > 0` would have put the cell back to two possible heights — the thing the
+      // bar's move was supposed to end. With the bar inside the cover and this line always present, the
+      // cell is `cover + gap + caption + gap + one line` for every book on the shelf.
+      //
+      // `TYPE_CAPTION` and `palette.foreground`, the same type step and colour as the caption one line
+      // above it. `mutedForeground` is the obvious "quieter" choice and is **not** usable here: it
+      // measures 4.27:1 on the light page and 4.40:1 on the sepia one (`Theme.ets`' `READER_MUTED_ALPHA`
+      // records both figures), i.e. below this project's 4.5:1 floor for text on the page. `foreground`
+      // on `background` measures 17.428:1 light / 17.183:1 dark / 10.842:1 sepia. `verify-themes.mjs`
+      // re-derives the three figures from the palettes on every run.
+      Text(this.progressLabel(book.progress))
+        .fontSize(TYPE_CAPTION)
+        .fontColor(this.palette.foreground)
+        // One line, so the row is one line box whatever a long-locale font metric does — `maxLines(1)`
+        // bounds the `Text`'s measured height exactly as the caption's does.
+        .maxLines(1)
+        // Bounded, like the caption: an unconstrained `Text` in a `Column` of `width('100%')` is not
+        // what decides this cell's width, and a `Text` that measured itself would be a second thing
+        // the row height depended on.
+        .width('100%')
     }
     .width('100%')
     .alignItems(HorizontalAlign.Start)
     .onClick((): void => {
       this.onOpen(book);
     })
+  }
+
+  /**
+   * The reading progress as the text that replaced the bar, e.g. `35%`.
+   *
+   * The value is the fraction `book.progress` carries, clamped before it is rounded: the column is
+   * clamped by `Books.updateReadingPosition` on this device's writes, but a row can also arrive from a
+   * peer over sync, and `Math.round(1.4 × 100)` would print 「140%」 for a value this client never
+   * wrote. The clamp is the same shape that function uses (`< 0 → 0`, `> 1 → 1`).
+   *
+   * `Math.round` rather than a floor or a decimal: the shell's sync card labels its own bar this way
+   * (`Index.progressPercentLabel`), so one rounding rule covers both progress read-outs in the app.
+   * It does mean a book at 99.6 % reads 「100%」 while its bar is a hair short of full — the same
+   * tradeoff the sync card makes, and the alternative (truncating) reads 「99%」 on a finished book.
+   */
+  private progressLabel(progress: number): string {
+    const clamped: number = progress < 0 ? 0 : progress > 1 ? 1 : progress;
+    return `${Math.round(clamped * 100)}%`;
   }
 
   /**
@@ -932,33 +1079,141 @@ export struct ShelfPage {
     return MENU_WIDTH_UNMEASURED;
   }
 
+  /**
+   * The header's sync control: one icon, no label (r117).
+   *
+   * It replaces the sort button this row used to hold. 「把主界面的"最近阅读"按钮删了，换成一个同步
+   * 按钮，用图标表示即可」 — so it is an icon button and nothing else: **no visible text**, with
+   * `accessibilityText` carrying the name for a screen reader (icon-only was the request, and a
+   * control a reader cannot name is a control half the users cannot find).
+   *
+   * ## The symbol
+   *
+   * `sys.symbol.arrow_clockwise`. It is not a new choice: the shell already names that symbol for
+   * **同步** — `Index.settingsRow('sync', '同步', $r('sys.symbol.arrow_clockwise'), 1)` — so the
+   * shelf's button wears the same glyph as the settings row that leads to the same page. A
+   * `SymbolGlyph` component rather than a `SymbolGlyphModifier`, because this is a child of the button
+   * and not a style handed to a component that takes one (`BottomTabBarStyle`, `MenuItem`); both forms
+   * are used in this file and the difference is only where the glyph is consumed. `@kit.ArkUI`'s
+   * `SymbolGlyphModifier` is already imported (the menu's trash row needs it), which is the import
+   * whose absence is the recorded cause of icons that do not render.
+   *
+   * ## What it says about the pass
+   *
+   * The state is the shell's `syncBusy` — **the same field the 设置 → 同步 page's own buttons disable
+   * themselves on**, so this button and that page cannot disagree about whether a pass is in flight,
+   * and no new state was added for it. Three things carry it, so it does not depend on the framework's
+   * idea of a disabled button:
+   *
+   *  - `enabled(!syncBusy)`: a second tap during a pass is refused, exactly as on the sync page;
+   *  - the glyph becomes a `LoadingProgress` ring while a pass runs — unmistakably "working" rather
+   *    than "dimmer", and the same component this page already uses for its own loading state;
+   *  - `accessibilityText` says 「同步进行中」 rather than 「同步」, so the state is available to a
+   *    reader who cannot see the ring at all.
+   *
+   * **Failure is deliberately not shown here.** The only failure signal the shell has is the text of
+   * its last summary/error line, and turning *that* into a red icon would mean either matching error
+   * strings (a guess) or adding a flag beside `syncMessage` (a second source of truth for the same
+   * fact). Both are worse than what already exists: a failed pass raises `toast('同步失败')` and leaves
+   * its message on the 设置 → 同步 page, which is where a pass is configured and where its detail
+   * lives. This button is a trigger, and it reports the one thing a trigger can honestly report.
+   *
+   * ## Layout
+   *
+   * `MIN_TAP_TARGET` (48 vp) square, so the touch target is the guidance minimum even though the glyph
+   * inside it is `ROW_ICON_SIZE` (24 vp). `Button({ type: ButtonType.Circle })` because an icon button
+   * is a circle — with both width and height set, the radius is half the smaller side and any
+   * `borderRadius` would be ignored. The fill and the glyph come from the palette rather than from the
+   * framework's defaults, which follow the **system** colour mode and would paint a system-grey chip on
+   * the sepia theme — the defect `Index.syncSection` records for the same reason.
+   */
+  @Builder
+  private syncIconButton() {
+    Button({ type: ButtonType.Circle, stateEffect: true }) {
+      if (this.syncBusy) {
+        LoadingProgress()
+          .width(ROW_ICON_SIZE)
+          .height(ROW_ICON_SIZE)
+          .color(this.palette.primaryForeground)
+      } else {
+        SymbolGlyph($r('sys.symbol.arrow_clockwise'))
+          .fontSize(ROW_ICON_SIZE)
+          .fontColor([this.palette.primaryForeground])
+      }
+    }
+    .width(MIN_TAP_TARGET)
+    .height(MIN_TAP_TARGET)
+    .backgroundColor(this.palette.primary)
+    .enabled(!this.syncBusy)
+    .accessibilityText(this.syncBusy ? '同步进行中' : '同步')
+    .onClick((): void => {
+      // The shell's own pass, in the same mode the sync page's 同步 button uses. Not awaited and not
+      // `void`-ed, matching that button: `runSync` reports its own outcome and never rejects.
+      this.onSync();
+    })
+  }
+
+  /**
+   * The header's import control: one icon, no label (r117).
+   *
+   * 「导入也换成图标」. Same construction as `syncIconButton` above and for the same reasons — a 48 vp
+   * circle from the palette, the glyph at `ROW_ICON_SIZE`, `accessibilityText('导入')` for the name —
+   * so the row's two controls are one kind of thing rather than two.
+   *
+   * ## The symbol, and why these two cannot be confused
+   *
+   * `sys.symbol.plus`. The action is *add books to this shelf* — the same action the empty state
+   * spells out as 「导入书籍」 — and a plus is the platform's own word for adding. It is also the
+   * farthest glyph from the sync button's circular arrow that this icon set offers: the requirement
+   * is that the two remain distinguishable at a glance, and two arrow-shaped glyphs (say
+   * `arrow_down_to_line` beside `arrow_clockwise`) would be one arrow apiece at 24 vp. `sys.symbol.plus`
+   * is in the SDK's own symbol table (`toolchains/id_defined.json`), which is the check that matters:
+   * an unknown `sys.symbol.*` name is a **compile** error, not a blank glyph.
+   */
+  @Builder
+  private importIconButton() {
+    Button({ type: ButtonType.Circle, stateEffect: true }) {
+      SymbolGlyph($r('sys.symbol.plus'))
+        .fontSize(ROW_ICON_SIZE)
+        .fontColor([this.palette.primaryForeground])
+    }
+    .width(MIN_TAP_TARGET)
+    .height(MIN_TAP_TARGET)
+    .backgroundColor(this.palette.primary)
+    .accessibilityText('导入')
+    .onClick((): void => {
+      this.onImport();
+    })
+  }
+
   build() {
     Column() {
-      // Search and sort live in the shelf, not the shell, because they only affect
+      // Search and the two actions live in the shelf, not the shell, because they only affect
       // this list.
-      Row({ space: 8 }) {
+      //
+      // **The sort button is gone (r117)** and its slot holds the sync button; 导入 became an icon
+      // beside it. What that costs — no way to change the shelf's order — is recorded on this struct
+      // and on `Index.shelfSort`. The arithmetic of the row, on the reference device's 391.1 vp page:
+      //
+      //   359.1 vp content  = 391.1 − 2 × 16            (SHELF_GRID_PADDING, both sides)
+      //   247.1 vp search   = 359.1 − 48 − 48 − 2 × 8   (two MIN_TAP_TARGET circles, two 8 vp gaps)
+      //
+      // so the field is 48 vp **wider** than it was when the two actions were text buttons (the old
+      // pair measured ~144 vp together: 「最近阅读」 at 13 fp plus 「导入」 at 14 fp plus the Button's own
+      // horizontal padding). The two circles are fixed-size and the search field is the only weighted
+      // child, which is what keeps the row from being able to overflow: it can shrink, they cannot.
+      Row({ space: SPACE_S }) {
         Search({ value: this.search, placeholder: '搜索书名或作者' })
           .layoutWeight(1)
           .onChange((value: string): void => {
             this.search = value;
             this.onReload();
           })
-        // A single cycling button rather than a menu: there are five orders, the
-        // label always shows the current one, and it costs one tap instead of two.
-        Button(sortLabel(this.sort))
-          .fontSize(13)
-          .onClick((): void => {
-            this.sort = nextSort(this.sort);
-            this.onReload();
-          })
-        Button('导入')
-          .fontSize(14)
-          .onClick((): void => {
-            this.onImport();
-          })
+        this.syncIconButton()
+        this.importIconButton()
       }
       .width('100%')
-      .padding({ left: 16, right: 16, top: 8, bottom: 8 })
+      .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: SPACE_S, bottom: SPACE_S })
       .alignItems(VerticalAlign.Center)
 
       if (this.loading) {
@@ -1077,36 +1332,9 @@ export struct ShelfPage {
   }
 }
 
-/** Human-readable label for a sort mode. */
-export function sortLabel(sort: BookSort): string {
-  switch (sort) {
-    case Sort.RECENTLY_ADDED:
-      return '最近添加';
-    case Sort.TITLE:
-      return '按书名';
-    case Sort.AUTHOR:
-      return '按作者';
-    case Sort.PROGRESS:
-      return '按进度';
-    case Sort.RECENTLY_OPENED:
-    default:
-      return '最近阅读';
-  }
-}
-
-/** Next sort mode in the cycle, for the one-button sort toggle. */
-export function nextSort(sort: BookSort): BookSort {
-  switch (sort) {
-    case Sort.RECENTLY_OPENED:
-      return Sort.RECENTLY_ADDED;
-    case Sort.RECENTLY_ADDED:
-      return Sort.TITLE;
-    case Sort.TITLE:
-      return Sort.AUTHOR;
-    case Sort.AUTHOR:
-      return Sort.PROGRESS;
-    case Sort.PROGRESS:
-    default:
-      return Sort.RECENTLY_OPENED;
-  }
-}
+// `sortLabel` and `nextSort` were deleted here in r117, together with the cycling sort button they
+// served. The five orders they named (最近阅读 / 最近添加 / 按书名 / 按作者 / 按进度) still exist in
+// `data`'s `BookSort` enum and the repository query still sorts by them; what is gone is any control
+// that lets a user choose between them, so `Index.shelfSort` stays at its default. The note is left
+// here so that the next reader looking for the sort control finds out where it went rather than
+// concluding it was never there.

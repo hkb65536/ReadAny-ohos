@@ -305,7 +305,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r116 (reader-bar-and-sync-inset)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r117 (shelf-cover-progress-icon-actions)';
 
 /**
  * A byte count as something a person can read.
@@ -640,6 +640,21 @@ struct Index {
   @State private shelfBooks: Book[] = [];
   @State private shelfLoading: boolean = true;
   @State private shelfSearch: string = '';
+  /**
+   * The shelf's sort order.
+   *
+   * **Nothing on screen writes this any more (r117), and that is the cost of the change the user
+   * asked for.** It fed `ShelfPage`'s single cycling sort button — the one whose label read
+   * 「最近阅读」 — and that button was deleted to make room for the sync button
+   * (「把主界面的"最近阅读"按钮删了，换成一个同步按钮」). The wiring went with it
+   * (`ShelfPage`'s `@Link sort`, `sortLabel`, `nextSort`), so this value is now fixed at its
+   * initialiser: the shelf can be ordered five ways and only the one below is reachable.
+   *
+   * What still reads it is `reloadShelf`, which hands it to the repository query — so the shelf is
+   * still *sorted* (by `last_opened_at`, descending); what is gone is the ability to change how.
+   * Nothing persists it either: the choice was never written to storage, so no unreachable stored
+   * state is left behind, and re-adding a control would only have to write this field again.
+   */
   @State private shelfSort: BookSort = Sort.RECENTLY_OPENED;
   @State private shelfMessage: string = '';
 
@@ -2234,7 +2249,15 @@ struct Index {
         books: this.shelfBooks,
         loading: this.shelfLoading,
         search: this.shelfSearch,
-        sort: this.shelfSort,
+        // The two things the header's sync button needs, and the reason both come from the shell:
+        // `syncBusy` is the same field the 设置 → 同步 page disables its own buttons on, and
+        // `runSync(NORMAL)` is the identical call that page's 同步 button makes. The shelf owns
+        // neither, so two surfaces cannot disagree about whether a pass is in flight, and this page
+        // is not a second place that decides what a sync does. See `ShelfPage.syncIconButton`.
+        syncBusy: this.syncBusy,
+        onSync: (): void => {
+          this.runSync(SyncMode.NORMAL);
+        },
         // The gesture bar's inset, so the grid reserves `FLOATING_BAR_CLEARANCE` plus it at the
         // bottom — the bar was lifted by exactly this much, and the mask above it with the bar.
         bottomInsetVp: this.shellBottomInsetVp,
