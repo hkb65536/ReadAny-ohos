@@ -305,7 +305,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r115 (placeholder-title-half)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r116 (reader-bar-and-sync-inset)';
 
 /**
  * A byte count as something a person can read.
@@ -2007,7 +2007,6 @@ struct Index {
     .borderWidth(1)
     .borderColor(paletteFor(this.themeMode).border)
     .transition(transitionOrIdentity(Motion.fadeIn()))
-    .margin({ left: 16, right: 16 })
   }
 
   /**
@@ -2060,7 +2059,6 @@ struct Index {
     .borderWidth(1)
     .borderColor(paletteFor(this.themeMode).border)
     .transition(transitionOrIdentity(Motion.fadeIn()))
-    .margin({ left: 16, right: 16 })
   }
 
   /**
@@ -2835,7 +2833,6 @@ struct Index {
         })
     }
     .width('100%')
-    .padding({ left: 16, right: 16 })
     .alignItems(VerticalAlign.Center)
     // Routed through `Motion`, like every other entrance in this file, so 「关闭」 really
     // turns it off: `Motion.fadeIn()` returns `null` when the setting is off and
@@ -2866,7 +2863,7 @@ struct Index {
               .layoutWeight(3)
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 12, bottom: 0 })
+          .padding({ top: 12, bottom: 0 })
           .alignItems(VerticalAlign.Center)
 
           // Which protocol the server speaks, and how to ask. Above the transfer buttons
@@ -2910,7 +2907,7 @@ struct Index {
               })
           }
           .width('100%')
-          .padding({ left: 16, right: 16, bottom: 0 })
+          .padding({ bottom: 0 })
 
           // States what each one does, because "full download" pulling an entire
           // library is not obvious from the label alone.
@@ -2918,7 +2915,7 @@ struct Index {
             .fontSize(11)
             .fontColor($r('sys.color.font_secondary'))
             .width('100%')
-            .padding({ left: 16, right: 16, bottom: 4 })
+            .padding({ bottom: 4 })
         }
 
         this.syncProgressCard()
@@ -2942,7 +2939,20 @@ struct Index {
       .width('100%')
       .alignItems(HorizontalAlign.Start)
       // Clears the floating tab bar, which overlaps this scroll area.
-      .padding({ bottom: FLOATING_BAR_CLEARANCE })
+      // **The page's horizontal inset lives here, once (r116).** Everything below is a
+      // `width('100%')` of this box instead of an element that insets itself, because in ArkUI a
+      // `width('100%')` child resolves against its parent's content box and does **not** shrink for
+      // its own `margin`: `.width('100%')` + `.margin({ left: 16, right: 16 })` lays out 100% + 32 vp
+      // wide, so the left margin moves the element right and the right margin lands **off the screen**.
+      // Measured on the device against the r115 build (`.diag/r116/layout.json`, the same instrument
+      // r108 used on the shelf): the two cards that used that pattern report `x2 = 1320` — the screen
+      // edge, where the dump clips them — and a screenshot of the same page shows the progress card's
+      // fill reaching x = 1319 of 1320 and cutting its percentage label, while every card inset through
+      // a parent stops at 1266. That is the user's 「边框都超出了手机」.
+      //
+      // The rows below only lost their own left/right padding; their rendered geometry is unchanged,
+      // because 16 vp of a 100%-wide box and 16 vp of padding are the same 16 vp.
+      .padding({ left: SPACE_M, right: SPACE_M, bottom: FLOATING_BAR_CLEARANCE })
     }
     .width('100%')
     .layoutWeight(1)
@@ -3325,7 +3335,7 @@ struct Index {
     .backgroundColor(paletteFor(this.themeMode).card)
     .borderWidth(1)
     .borderColor(paletteFor(this.themeMode).border)
-    .margin({ left: 16, right: 16, top: 16 })
+    .margin({ top: 16 })
   }
 
   build() {

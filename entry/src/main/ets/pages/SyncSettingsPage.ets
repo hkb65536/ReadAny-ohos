@@ -225,8 +225,12 @@ export struct SyncSettingsPage {
    * on a phone.
    *
    * A component that knows it will be embedded should not impose a scroll container.
-   * The padding and width stay here; the scrolling belongs to the parent, which is the
-   * only place that knows the full height of the content.
+   * The **scrolling** belongs to the parent, which is the only place that knows the full height
+   * of the content, and since r116 the parent owns the horizontal inset too. That is not a
+   * style preference: this form is a `width('100%')` child, and a `width('100%')` child does not
+   * shrink for its own `margin` in ArkUI, so an element that insets itself with a margin
+   * overflows its parent. `syncSection` pads its content column once and every child — this
+   * form included — is a plain `width('100%')` of the result.
    */
   build() {
     Column() {
@@ -423,7 +427,7 @@ export struct SyncSettingsPage {
         Blank().height(24)
     }
     .width('100%')
-    .padding({ left: 16, right: 16, top: 8 })
+    .padding({ top: 8 })
     .alignItems(HorizontalAlign.Start)
     .backgroundColor(this.palette.background)
   }

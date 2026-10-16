@@ -975,6 +975,26 @@ export struct ReaderView {
     // The two bars are placed by the window's avoid areas, not by the page box. Read once, here,
     // so the first reveal is already in the right place. See `resolveAvoidInsets`.
     this.resolveAvoidInsets();
+    // **The reader enters with the status bar down, because it enters with the bars down** (r116).
+    // The user: 「阅读界面的信号栏，在主界面点进阅读界面的时候是显示的，要呼出一次阅读界面的顶栏和底栏
+    // 才会隐藏。」 Until this line the reader wrote that bar only on a bars toggle and on unmount, so a
+    // freshly-opened book inherited the shell's baseline — `true` since r107 — and came into step with
+    // `barsVisible` only on the first middle tap. r107 located this exact line and did not write it
+    // (that round was authorised to change exactly one value in this file, the unmount's); r116 writes
+    // it. See `applyReaderStatusBar` for the full four-state account of the bar.
+    //
+    // **Why this write is the last word on mount — checked, not assumed.** The other app-wide writer
+    // is `Index.applySystemAppearance`. It is issued from `Index.aboutToAppear` (a parent's
+    // `aboutToAppear` runs before its children's) and from a theme pick, which cannot run while this
+    // component is mounted. Its call is an asynchronous `getLastWindow().then(...)` issued at
+    // start-up, so by the time a tap on a book creates this component the shell's request has long
+    // settled; this line's request is therefore issued strictly after it, and the bar is down in the
+    // reader's first frame rather than after the first toggle. That is the ordering the user's report
+    // describes from the other side.
+    //
+    // The **two-argument** form, exactly like `aboutToDisappear` and like `Index`: the mount and the
+    // unmount are one statement about the app-wide baseline, and only `toggleBars` animates.
+    this.applyReaderStatusBar(false);
   }
 
   /**
@@ -3233,17 +3253,21 @@ export struct ReaderView {
    * the bars down — the default — the page keeps the whole screen, and with them up the reader looks
    * like a normal app frame. So it has to be written from the reader.
    *
-   * ## The two writers, and why they cannot currently fight
+   * ## The two writers and the three call sites, and why they cannot currently fight
    *
-   * The status bar has exactly **two** writers in this app, and their lifetimes are disjoint:
+   * The status bar has exactly **two** writers in this app — this method and
+   * `Index.applySystemAppearance` — and their lifetimes are disjoint:
    *
    *  - **`Index.applySystemAppearance`** — app-wide, at start-up and on every theme pick. The
    *    theme picker lives on the **shell's** 设置 page; the reader *replaces* the shell rather than
    *    layering over it (`Index.build`'s `openBook` branch draws `readerScreen` instead of the
    *    `Navigation`/`shellTabs`), and the reader's own settings sheet carries **only 字号**. So the
    *    app-wide writer cannot run while this component is mounted;
-   *  - **this method** — while the reader is mounted: `toggleBars` (the middle tap zone) and
-   *    `aboutToDisappear` (the single unmount path).
+   *  - **this method** — while the reader is mounted, and from **three** call sites since r116:
+   *    `aboutToAppear` (the mount), `toggleBars` (the middle tap zone) and `aboutToDisappear` (the
+   *    single unmount path). The count was two until r116. The third is deliberate — it is the
+   *    mount write r107 located and did not make — and not a second writer: it cannot run at all
+   *    while the shell's own writer is able to, for the same reason the toggle cannot.
    *
    * **What r107 changed is the value they agree on, not the arrangement.** The baseline is now
    * `true`, so the unmount path asks for `true` as well; if it still asked for `false`, closing a
@@ -3251,14 +3275,32 @@ export struct ReaderView {
    * writers are therefore still one app-wide answer, and `verify-reader-chrome.mjs` asserts the two
    * files name the same value rather than trusting that they do.
    *
-   * **The inherited state on mount, disclosed rather than hidden.** This component writes the bar
-   * only when the bars are toggled and when it unmounts, so a reader that mounts with the shell's
-   * baseline visible shows a visible status bar until the first toggle puts it in step with
-   * `barsVisible`. That is the pre-r106 look, it does not touch the page box (the inset is read
-   * visibility-invariantly, so nothing re-paginates), and r107 left it alone deliberately: the round
-   * was authorised to change exactly one value in this file — the unmount's. A mount-time write
-   * would be the way to restore "hidden while the bars are down from the first frame", and it is
-   * recorded here as the next change to make if the user wants it.
+   * ## The bar's four states, in order (r116)
+   *
+   * Since r116 the bar is written at every boundary of the reader's life, so its whole course is
+   * written down here instead of being inferred from the call sites:
+   *
+   *  1. **shell baseline — visible.** `Index.applySystemAppearance` writes `true` app-wide
+   *     (「信号栏在主界面应该是常显的，现在隐藏了」), and the shell keeps it;
+   *  2. **reader mount — hidden.** `aboutToAppear` writes `false`: the reader opens with both bars
+   *     down, so it opens with the status bar down. **This state is what r116 added.** Before it the
+   *     reader *inherited* state 1 and only reached `barsVisible` on the first middle tap — the user's
+   *     report, verbatim: 「阅读界面的信号栏，在主界面点进阅读界面的时候是显示的，要呼出一次阅读界面的
+   *     顶栏和底栏才会隐藏。」 The write is issued strictly after state 1's request has settled (the
+   *     ordering is argued in `aboutToAppear`), so it is the last word on mount;
+   *  3. **each bars toggle — `barsVisible`.** `toggleBars` writes the value it has just written to
+   *     that field, with the platform's own curve. Unchanged by r116, and still the **only**
+   *     animated site;
+   *  4. **reader unmount — visible.** `aboutToDisappear` writes the baseline back — state 1's value —
+   *     unconditionally, on the single unmount path. **That equality is asserted across the two
+   *     files**, because it is what stops a closed book from leaving the shell's status bar hidden.
+   *
+   * States 2 and 3 are the reader's own behaviour (「我想让信号栏和顶栏底栏同步显隐」); states 1 and 4
+   * are the shell's, and the reader only ever hands them back.
+   *
+   * The page box is not involved in any of them: the inset is read visibility-invariantly, so no
+   * write here can re-paginate. r107's note that the mount write "does not touch the page box" still
+   * holds, which is why adding it was safe to do without a device.
    *
    * **The residual risk, recorded rather than hidden.** If a theme control is ever added to the
    * reader's settings sheet, picking a theme there would run `Index.chooseTheme` →
@@ -3273,7 +3315,10 @@ export struct ReaderView {
    * **API 12** (`@ohos.window.d.ts:4643`, `[since 12]`), far below this app's
    * `compatibleSdkVersion` 24, so it needs no guard — unlike the `@since 22` / SessionManager read
    * in `resolveAvoidInsets`. `toggleBars` passes **`true`** and accepts whatever curve the platform
-   * uses. It cannot be this app's spring: `curves.springMotion(BAR_SLIDE_RESPONSE,
+   * uses; the **mount** (`aboutToAppear`) and the **unmount** (`aboutToDisappear`) both omit it, so
+   * they write the same two-argument call `Index.applySystemAppearance` does — r116 kept that shape
+   * for the mount deliberately, because a status bar easing *in* over a page that has no frame yet
+   * would be motion about nothing. It cannot be this app's spring: `curves.springMotion(BAR_SLIDE_RESPONSE,
    * BAR_SLIDE_DAMPING)` is an ArkUI curve for ArkUI properties, and there is no way to hand it to a
    * system-bar transition. A status bar that **snapped** beside a springing capsule would look
    * worse than one that eases on a different curve, so the mismatch is stated and accepted rather
@@ -3281,14 +3326,17 @@ export struct ReaderView {
    *
    * ## Log-and-continue, and the return value
    *
-   * `aboutToDisappear` passes **no** third argument — the app-wide baseline is written the same way
-   * in `Index` — and both failures are `hilog.warn`s, matching that call. The two argument shapes
-   * are also what tells the two callers apart in the log (`baseline` is the unmount, `with the bars`
-   * is the toggle; since r107 both can be asking for `true`, so the value alone no longer says who
-   * asked). The SDK is explicit that success proves nothing about the result: 「The return value does
-   * not indicate that the status bar … [is] shown or hidden」, and the call is a documented silent
-   * no-op in split-screen and floating-window mode. So this is a log, not a retry, and not an error
-   * the reader has to dismiss.
+   * `aboutToAppear` and `aboutToDisappear` both pass **no** third argument — the app-wide baseline
+   * is written the same way in `Index` — and every failure is a `hilog.warn`, matching that call. The
+   * log's label therefore has to come from the two things a call site actually carries: the argument
+   * shape, and, for the two-argument shape, the value. Since r116 that pair is exact, because the
+   * mount is the only two-argument caller asking for `false` (state 2) while the unmount is the only
+   * one asking for `true` (state 4, the shell's own value). **An assertion below fails if those two
+   * values ever become equal**, which is exactly when this label would start lying. The SDK is
+   * explicit that success proves nothing about the result: 「The return value does not indicate that
+   * the status bar … [is] shown or hidden」, and the call is a documented silent no-op in split-screen
+   * and floating-window mode. So this is a log, not a retry, and not an error the reader has to
+   * dismiss.
    */
   private applyReaderStatusBar(visible: boolean, enableAnimation?: boolean): void {
     try {
@@ -3296,21 +3344,26 @@ export struct ReaderView {
         .getHostContext() as common.UIAbilityContext;
       window.getLastWindow(context)
         .then((win: window.Window): void => {
-          // The third argument is passed only when the caller asked for animation, so the unmount
-          // path issues the same two-argument call `Index.applySystemAppearance` does.
+          // The third argument is passed only when the caller asked for animation, so the mount and
+          // the unmount both issue the same two-argument call `Index.applySystemAppearance` does.
           const applied: Promise<void> = enableAnimation === undefined
             ? win.setSpecificSystemBarEnabled('status', visible)
             : win.setSpecificSystemBarEnabled('status', visible, enableAnimation);
           applied
             .then((): void => {
-              // The path is named because the value cannot name it any more: both the unmount
-              // (the app-wide baseline) and a bars toggle can be asking for a visible bar.
+              // Three call sites, two argument shapes: the shape alone cannot name the caller any
+              // more, so the two-argument branch reads the value as well. That pair is exact today —
+              // the mount is the only such caller asking for `false`, and the unmount the only one
+              // asking for `true` (the shell's baseline, asserted equal across the two files). The
+              // assertion that the two values differ is what keeps this label honest.
               hilog.info(
                 DOMAIN,
                 TAG,
                 'status bar %{public}s (%{public}s)',
                 visible ? 'shown' : 'hidden',
-                enableAnimation === undefined ? 'app-wide baseline' : 'with the bars',
+                enableAnimation === undefined
+                  ? (visible ? 'app-wide baseline' : 'reader mount, bars down')
+                  : 'with the bars',
               );
             })
             .catch((err: Object): void => {
