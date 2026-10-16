@@ -789,6 +789,60 @@ export function topBarMaterialOption(): Object | undefined {
 }
 
 // ---------------------------------------------------------------------------
+// The immersive material of the shelf's header bar (沉浸光感)
+// ---------------------------------------------------------------------------
+
+/**
+ * The material for the shelf header — the reader's top-bar surface with 自动反色 switched on — or
+ * `undefined` for the opaque palette card.
+ *
+ * ## The three refusals are the reader's three refusals, spelled out again on purpose
+ *
+ * The answer to "may this app put a 沉浸光感 surface on a top bar" is one policy, and
+ * `topBarMaterialOption` above is where it lives: the API/device gate (`materialOption()`), then the
+ * low-compute level at which a material stops being a filter over this app's surface and *becomes* the
+ * surface. This function asks the same two questions in the same order and refuses on the same
+ * answers, because the alternative — routing the header through `topBarMaterialOption` and discarding
+ * the object it returns — would build a reader top-bar material on every call purely as a predicate,
+ * and the third alternative, a public `topBarMaterialAllowed(): boolean`, would change
+ * `topBarMaterialOption`'s body, whose exact first statement the reader-chrome audit pins as the
+ * evidence that the reader's own path is intact.
+ *
+ * **What keeps the two copies from drifting is an assertion, not a comment**:
+ * `verify-book-menu.mjs` slices both bodies and requires the same two ordered refusals in each, so a
+ * round that relaxes one of them fails there rather than on a device that gets a material the other
+ * surface is refused.
+ *
+ * ## Why 自动反色 is on here and not on the reader's bar
+ *
+ * `immersiveHeaderBarMaterialOption` carries the whole of it: it is the documented remedy for a glyph
+ * over a **translucent** surface (表1's special resources are the only colours the framework will
+ * re-tone), and 功耗优化's 正例 is exactly this shape — a small local container, with the list that
+ * must *not* participate outside it. The reader's bar keeps the recipe it was verified with; its own
+ * subtree carries no 表1 resource, so the flag would be inert there, and "inert on verified work" is
+ * not a reason to change verified work.
+ *
+ * Two things about the fallback are worth stating here because a caller has to render both:
+ * `undefined` is returned on the same three paths `topBarMaterialOption` documents (no API, no device
+ * support, `SMOOTH`), and on all three the header paints `palette.card` in the same geometry — the
+ * surface r118 gave it — rather than a hole.
+ */
+export function headerBarMaterialOption(): Object | undefined {
+  if (materialOption() === undefined) {
+    return undefined;
+  }
+  if (immersive.materialLevelPaintsBackground()) {
+    return undefined;
+  }
+  try {
+    return immersive.immersiveHeaderBarMaterialOption();
+  } catch (err) {
+    hilog.warn(DOMAIN, TAG, 'header material failed, using the palette card: %{public}s', String(err));
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The immersive material of a popup menu (沉浸光感)
 // ---------------------------------------------------------------------------
 

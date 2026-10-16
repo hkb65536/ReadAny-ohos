@@ -4,6 +4,7 @@ import type { ThemePalette } from '../theme/Theme';
 import type { Book } from 'data';
 import {
   FLOATING_BAR_CLEARANCE,
+  headerBarMaterialOption,
   menuMaterialOption,
   menuTriggerBackground,
   MIN_TAP_TARGET,
@@ -18,7 +19,6 @@ import {
   TYPE_SUBTITLE,
   TYPE_TITLE,
   TYPE_TITLE_LARGE,
-  topBarMaterialOption,
 } from '../theme/Theme';
 import {
   COVER_PROGRESS_HEIGHT,
@@ -342,19 +342,19 @@ export struct ShelfPage {
    *
    * ## Why it is resolved in `aboutToAppear` and not at construction
    *
-   * `topBarMaterialOption()` builds a real `uiMaterial.ImmersiveMaterial` when the gate admits it, and
-   * that object is `@since 26.0.0`. An eager field initialiser runs **before** any lifecycle hook, on
-   * whatever runtime the module finds itself on, so putting the construction there would evaluate an
-   * API-26 namespace during construction on an API-24 device — the one thing
+   * `headerBarMaterialOption()` builds a real `uiMaterial.ImmersiveMaterial` when the gate admits it,
+   * and that object is `@since 26.0.0`. An eager field initialiser runs **before** any lifecycle hook,
+   * on whatever runtime the module finds itself on, so putting the construction there would evaluate
+   * an API-26 namespace during construction on an API-24 device — the one thing
    * `canApplyImmersiveMaterial()` exists to prevent. The reader already establishes the shape: it
    * stores the *gate's answer* at construction and constructs the object only where that answer has
    * already said yes (`ReaderView.topBarMaterialObject`).
    *
    * ## What `undefined` means, and why the opaque branch is not a fallback nobody reaches
    *
-   * `topBarMaterialOption` is the app's one guarded decision point for a **top** bar's material — the
-   * reader's floating top bar uses the same one — and it answers `undefined` on all three documented
-   * "no material" paths at once:
+   * `headerBarMaterialOption` is the app's guarded decision point for a **top bar's** material: it asks
+   * the same two questions `topBarMaterialOption` (the reader's floating top bar) asks, in the same
+   * order, and answers `undefined` on all three documented "no material" paths at once:
    *
    *  1. **The API is absent** (a pre-26 runtime). The namespace does not exist there, so the object
    *     cannot be constructed at all and the guard answers before anything touches it.
@@ -365,6 +365,11 @@ export struct ShelfPage {
    *     knows only light from dark, so at that level the sepia header would come back white or black —
    *     the defect this project has already hit twice, on a page-sized container and on the ⋯ chip.
    *
+   * It is deliberately **not** `topBarMaterialOption` itself: this header's material carries
+   * 自动反色 (`colorInvert`) so the two glyphs on it can be re-toned against a translucent surface,
+   * and the reader's top bar — verified work — keeps the recipe it was verified with.
+   * `immersiveHeaderBarMaterialOption` records both halves.
+   *
    * ## Why the answer is memoised
    *
    * It decides **which of two component trees is built**, not a value inside one: ArkTS cannot apply an
@@ -374,12 +379,14 @@ export struct ShelfPage {
    */
   private headerMaterial: Object | undefined | null = null;
   /**
-   * Whether the 「书架」 title is currently hidden because the shelf is scrolled up.
+   * Whether the 「书架」 title is hidden because the shelf is scrolled up — **and with it the whole
+   * region the title occupied**.
    *
-   * The shell writes it (see `onTitleScroll`); this page only renders from it. Only `opacity` and
-   * `translate` are derived from it — never a layout property — for the reason recorded on
-   * `HEADER_TITLE_HIDE_OFFSET`: the header's height is the title bar's height and therefore also the
-   * grid's top offset, so a layout-animated title would reflow the grid during the gesture.
+   * The shell writes it (see `onTitleScroll`); this page only renders from it. Four properties are
+   * derived from it and no more: the title row's `height`, its `opacity`, its `translate`, and the
+   * header bar's own height — one read in each height helper and two in the title's builder, so the
+   * count is asserted rather than left to inspection. `headerTitle` records why a layout property
+   * joined the two render-only ones in r119.
    */
   @Prop titleHidden: boolean = false;
 
@@ -389,7 +396,7 @@ export struct ShelfPage {
     // for a new book list. See `scrollOffsetVp`.
     this.scrollOffsetVp = 0;
     // The material question is asked here rather than at construction — see `headerMaterial`.
-    this.headerMaterial = topBarMaterialOption();
+    this.headerMaterial = headerBarMaterialOption();
   }
 
   /**
@@ -1265,14 +1272,56 @@ export struct ShelfPage {
    * its message on the 设置 → 同步 page, which is where a pass is configured and where its detail
    * lives. This button is a trigger, and it reports the one thing a trigger can honestly report.
    *
-   * ## Layout
+   * ## Layout, and the fill this control no longer has (r119)
    *
    * `MIN_TAP_TARGET` (48 vp) square, so the touch target is the guidance minimum even though the glyph
    * inside it is `ROW_ICON_SIZE` (24 vp). `Button({ type: ButtonType.Circle })` because an icon button
    * is a circle — with both width and height set, the radius is half the smaller side and any
-   * `borderRadius` would be ignored. The fill and the glyph come from the palette rather than from the
-   * framework's defaults, which follow the **system** colour mode and would paint a system-grey chip on
-   * the sepia theme — the defect `Index.syncSection` records for the same reason.
+   * `borderRadius` would be ignored.
+   *
+   * The user, on r118's version: 「然后两个按钮现在都是黑色的，帮我换成透明的吧，不然沉浸光感看不出来」.
+   * The circle's fill was `palette.primary`, and a child's own `backgroundColor` sits **above** the
+   * material layer (沉浸光感常见问题 · 材质效果的显示层级问题: 「自绘制组件的背景色作用于内容层，材质效果作用
+   * 于背板层，而内容层位于背板层之上」) — so the fill was a black disc over the surface this row was moved
+   * into the title bar to get. It is now `Color.Transparent`.
+   *
+   * **`Color.Transparent` rather than no `backgroundColor` at all**: an unset `Button` background is the
+   * framework's own button colour, which follows the **system** colour mode and would paint exactly the
+   * disc that is being removed. Removing the attribute and setting it transparent are not the same
+   * thing, and only one of them is transparent.
+   *
+   * ## The glyph is the system's invertible resource, not a palette constant
+   *
+   * With no fill behind it the glyph sits on the material, and a hardcoded colour there cannot adapt:
+   * 自动反色 「使用硬编码的颜色值（如 Color.White、'#FFFFFFFF'）不会触发自动反色，仅对…特殊资源（见下表1）
+   * 值时生效」. `$r('sys.color.icon_primary')` is one of 表1's resources and resolves `#E5000000` in the
+   * light system mode and `#E5FFFFFF` in the dark one, so the glyph is the system's own "primary icon"
+   * tone on whichever surface it lands — and on a `THIN` material with `colorInvert` on (this header's
+   * material carries it; `headerBarMaterialOption` records why) the framework may re-tone it against a
+   * backdrop that disagrees with the system mode.
+   *
+   * **Measured for the case where there is no material at all**, since the opaque branch of the header
+   * paints `palette.card` and there is no inversion to lean on there (composited at the resource's own
+   * `0xE5`, against `palette.card` / the page the material would otherwise cover):
+   *
+   *   light  `#1A1A1A` on `#FFFFFF` 17.404:1 · on `#F0F0EC` 15.541:1
+   *   dark   `#E8E8E8` on `#1E1E1E` 13.606:1 · on `#121212` 15.149:1
+   *   sepia  `#191816` on `#F5EBD7` 14.994:1 · on `#F0E6D2` 14.463:1
+   *
+   * All six are far above the 4.5:1 floor, so unlike the rest of the header this control needs **no
+   * second branch** for the no-material device: the same glyph resource is legible on both surfaces in
+   * all three themes. `verify-themes.mjs` computes those six numbers from the palettes and from the
+   * app's own system-mode mapping rather than trusting this paragraph.
+   *
+   * ## The press state, which is now the only thing drawing here
+   *
+   * `stateEffect: true` is unchanged (and is what `Button` defaults to). The declaration of
+   * `stateEffect` says the press overlay is composited **on the background colour after the state style
+   * is applied**, so a fully transparent background leaves the framework with a translucent overlay over
+   * the material rather than a fill to darken — the press feedback is a grey wash over the material
+   * instead of a darker disc. Whether the framework's overlay is strong enough to read on a thin
+   * material is **not verifiable without the device** (see the round's hand-run list); what is certain
+   * from the declaration is that no fill is required for `stateEffect` to draw.
    */
   @Builder
   private syncIconButton() {
@@ -1281,16 +1330,25 @@ export struct ShelfPage {
         LoadingProgress()
           .width(ROW_ICON_SIZE)
           .height(ROW_ICON_SIZE)
-          .color(this.palette.primaryForeground)
+          // **Not on 表1.** `colorInvert`'s list names `Text`/`Button`/`SymbolGlyph` `fontColor`,
+          // `Image.fillColor`, `Search`'s parts, … and `LoadingProgress.color` is not among them, so
+          // this ring is *statically* coloured — it cannot be re-toned against the material. The
+          // resource is still the right one (it is the system's primary-icon tone for the mode this app
+          // forces from its own theme), and it is deliberately the same value as the glyph beside it so
+          // the two states of one control are one colour.
+          .color($r('sys.color.icon_primary'))
       } else {
         SymbolGlyph($r('sys.symbol.arrow_clockwise'))
           .fontSize(ROW_ICON_SIZE)
-          .fontColor([this.palette.primaryForeground])
+          // 表1 lists `SymbolGlyph`'s `fontColor` as one of the attributes that participates in
+          // 自动反色; a palette constant here would not, and would be the tone of the material it is
+          // drawn on as soon as the material's backdrop disagreed with it.
+          .fontColor([$r('sys.color.icon_primary')])
       }
     }
     .width(MIN_TAP_TARGET)
     .height(MIN_TAP_TARGET)
-    .backgroundColor(this.palette.primary)
+    .backgroundColor(Color.Transparent)
     .enabled(!this.syncBusy)
     .accessibilityText(this.syncBusy ? '同步进行中' : '同步')
     .onClick((): void => {
@@ -1304,8 +1362,11 @@ export struct ShelfPage {
    * The header's import control: one icon, no label (r117).
    *
    * 「导入也换成图标」. Same construction as `syncIconButton` above and for the same reasons — a 48 vp
-   * circle from the palette, the glyph at `ROW_ICON_SIZE`, `accessibilityText('导入')` for the name —
-   * so the row's two controls are one kind of thing rather than two.
+   * circle with **no fill of its own** (r119: 「两个按钮现在都是黑色的，帮我换成透明的吧」 — the fill
+   * covered the material the whole header exists to carry), the glyph at `ROW_ICON_SIZE` in the system's
+   * invertible `$r('sys.color.icon_primary')` rather than a palette constant, and
+   * `accessibilityText('导入')` for the name — so the row's two controls are one kind of thing rather
+   * than two. The 48 vp tap box is the box; what changed is only what is painted inside it.
    *
    * ## The symbol, and why these two cannot be confused
    *
@@ -1322,11 +1383,11 @@ export struct ShelfPage {
     Button({ type: ButtonType.Circle, stateEffect: true }) {
       SymbolGlyph($r('sys.symbol.plus'))
         .fontSize(ROW_ICON_SIZE)
-        .fontColor([this.palette.primaryForeground])
+        .fontColor([$r('sys.color.icon_primary')])
     }
     .width(MIN_TAP_TARGET)
     .height(MIN_TAP_TARGET)
-    .backgroundColor(this.palette.primary)
+    .backgroundColor(Color.Transparent)
     .accessibilityText('导入')
     .onClick((): void => {
       this.onImport();
@@ -1402,16 +1463,16 @@ export struct ShelfPage {
       // Deliberately empty. See the note above: this `Navigation` exists for its title bar.
     }
     .width('100%')
-    .height(this.headerBarHeight())
+    .height(this.headerBarCurrentHeight())
     .hideBackButton(true)
-    .title({ builder: this.materialHeaderTitle, height: this.headerBarHeight() },
+    .title({ builder: this.materialHeaderTitle, height: this.headerBarCurrentHeight() },
       { barStyle: BarStyle.STACK, backgroundColor: Color.Transparent })
     .expandSafeArea([], [])
   }
 
   /**
-   * The title bar's height in vp: the measured system band, the title's line box, the header row, and
-   * the two gaps that separate them.
+   * The title bar's height in vp **with the 「书架」 title showing**: the measured system band, the
+   * title's line box, the header row, and the two gaps that separate them.
    *
    * Derived rather than fixed, and that is the point: the band is a property of the device (39 vp on
    * the reference phone) and the row is `MIN_TAP_TARGET`, so a fixed number would be wrong on the first
@@ -1422,13 +1483,47 @@ export struct ShelfPage {
    * `TAB_CONTENT_TITLE_HEIGHT` is deliberately **not** used as the bar's height. It is 56 vp because
    * the reference keeps its page title as a fixed anchor a scrolling list collapses against; this bar
    * cannot be that, because it holds a 48 vp control *and* a 30 fp title, and 56 vp would clip both.
+   *
+   * **r119: this is now one of two heights rather than the height.** The sum below is written in the
+   * order band → title → row → band, and the **middle** `SPACE_S` is the bar content's bottom padding
+   * (the content column's own `padding` is top `topInsetVp + SPACE_S`, bottom `SPACE_S`), so the whole
+   * expression is exactly that column's measured content: `39 + 8 + 35.25 + 48 + 8 = 138.25 vp`.
+   * `headerBarCollapsedHeight` is the same sum with the title's line box removed.
    */
   private headerBarHeight(): number {
-    // One line box of `TYPE_TITLE_LARGE`, from `TYPE_TITLE_LARGE` rather than a second literal: the
-    // 1.175 em ratio is the reference device's own measured line box for this font
-    // (`Tokens.ets` records the two measured ratios, 1.161 and 1.175; the larger is used here).
-    const titleLineVp: number = TYPE_TITLE_LARGE * 1.175;
-    return this.topInsetVp + SPACE_S + titleLineVp + SPACE_S + MIN_TAP_TARGET;
+    // The title's line box comes from `headerTitleHeight`, not from a second literal: the bar's
+    // height and the title's own reserved space are two halves of one arithmetic, and the moment they
+    // are two numbers the title clips inside its own bar or leaves a gap nobody can explain.
+    return this.topInsetVp + SPACE_S + this.headerTitleHeight() + SPACE_S + MIN_TAP_TARGET;
+  }
+
+  /**
+   * The title bar's height in vp with the 「书架」 title hidden: the same arithmetic, one term shorter.
+   *
+   * `topInsetVp + SPACE_S + MIN_TAP_TARGET + SPACE_S` = `39 + 8 + 48 + 8` = **103 vp**, i.e. the same
+   * 8 vp above and below the row the showing bar has. The 35.25 vp that leaves the sum is
+   * `TYPE_TITLE_LARGE × 1.175`, the title's own line box — **the region the user asked to disappear**
+   * (「我不是只想文字消失，我是想那块区域也消失。也就是说下拉的时候搜索框、同步按钮和导入按钮要顶到
+   * 现在标题的框的位置。」). Nothing else moves: the band is still at the top (so the first line of ink
+   * still clears the status bar) and the row lands exactly where the title's box was.
+   */
+  private headerBarCollapsedHeight(): number {
+    return this.topInsetVp + SPACE_S + MIN_TAP_TARGET + SPACE_S;
+  }
+
+  /**
+   * The header's height right now — **the one number the bar, its material carrier and the grid all
+   * read.**
+   *
+   * `Navigation.height` and `Navigation.title`'s `height` are handed the same call, and so is the
+   * material-carrying `Column` inside the title builder. That is deliberate and it is the whole of how
+   * the material follows a shrinking bar: the carrier's box *is* the current height, so the material
+   * can never be painted beyond its own content (which would leave the search row floating on an
+   * unpainted strip) nor stop short of it. The grid needs nothing of its own either — its top edge is
+   * this bar's bottom edge, and `ShelfPage.build` places it as the next sibling.
+   */
+  private headerBarCurrentHeight(): number {
+    return this.titleHidden ? this.headerBarCollapsedHeight() : this.headerBarHeight();
   }
 
   /**
@@ -1466,7 +1561,12 @@ export struct ShelfPage {
         this.headerRow()
       }
       .width('100%')
-      .height('100%')
+      // **The animated height, not `'100%'` of the bar.** r119: the bar shrinks when the title's
+      // region collapses, and this carrier is what the material is painted on — so its box has to be
+      // the same expression the bar's box is, frame for frame, or the material would stop short of the
+      // row it carries and leave it floating on an unpainted strip. `headerBarCurrentHeight` carries
+      // that argument.
+      .height(this.headerBarCurrentHeight())
       .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: this.topInsetVp + SPACE_S, bottom: SPACE_S })
       .alignItems(HorizontalAlign.Start)
       // **The only `systemMaterial` this page carries, and it is inside a `Navigation` title bar's
@@ -1478,7 +1578,10 @@ export struct ShelfPage {
         this.headerRow()
       }
       .width('100%')
-      .height('100%')
+      // The same box in the opaque branch. It is not cosmetic here either: this is the surface a
+      // device that cannot be served a material sees, and it has to shrink with the bar for the same
+      // reason — otherwise the header would keep a card-coloured strip under a collapsed title.
+      .height(this.headerBarCurrentHeight())
       .padding({ left: SHELF_GRID_PADDING, right: SHELF_GRID_PADDING, top: this.topInsetVp + SPACE_S, bottom: SPACE_S })
       .alignItems(HorizontalAlign.Start)
       .backgroundColor(this.palette.card)
@@ -1486,11 +1589,17 @@ export struct ShelfPage {
   }
 
   /**
-   * One line box of the title, from the same ratio `headerBarHeight` uses.
+   * One line box of the title, in vp: the constant both heights above are built from, and the exact
+   * distance the header loses when the title's region collapses.
    *
-   * A separate helper rather than one expression written twice: the bar's height and the title's
-   * reserved space are two halves of one arithmetic, and the moment they are two literals the title
-   * clips inside its own bar or leaves a gap nobody can explain.
+   * A separate helper rather than one expression written twice, and now load-bearing in three places:
+   * the showing bar adds it, the collapsed bar omits it, and the title's own row is either this or 0.
+   * Written as two literals they would be three numbers that have to agree.
+   *
+   * The `1.175` is the reference device's **own measured line-box ratio** for this font, not a
+   * typographic guess — `Tokens.ets` records both measurements taken on the device (1.161 em for the
+   * 12 fp caption and 1.175 em for the 28 fp cover title) and the larger of the two is used here, which
+   * is the conservative end: at 30 fp a clipped line box would be worse than a spare 2 vp.
    */
   private headerTitleHeight(): number {
     return TYPE_TITLE_LARGE * 1.175;
@@ -1529,24 +1638,55 @@ export struct ShelfPage {
   }
 
   /**
-   * The 「书架」 title — the one thing in this header that moves.
+   * The 「书架」 title — the one thing in this header that moves, and since r119 the region it sat in
+   * moves with it.
    *
-   * ## Only `opacity` and `translate`, and the space is reserved rather than reclaimed
+   * ## The user's correction, and what it costs
    *
-   * 「上划的时候就隐藏『书架』标题」 is answered by `titleHidden`, and the two properties above are the
-   * whole of what is derived from it. **The row keeps its height whether the title is visible or not** —
-   * it is `headerTitleHeight()`, not "whatever the text measures" — so the search row below it does not
-   * move and the grid, whose top edge is this bar's bottom edge, does not reflow.
+   * r118 hid the title by fading the text and **reserving** its line box. The user rejected that
+   * arrangement in as many words:
    *
-   * Collapsing the title instead would grow the grid by ~44 vp **during the gesture**. That is the
-   * class of problem this project has already paid for twice — r109's whole-row pop in this very grid,
-   * and the reader re-paginating when a bar changed its measured page box — which is why the reserved
-   * space is the deliberate choice and not an oversight. Its visible cost is ~44 vp of empty space under
-   * the status bar once the shelf is scrolled down; its benefit is that nothing on screen moves except
-   * the title itself.
+   *   「我不是只想文字消失，我是想那块区域也消失。也就是说…搜索框、同步按钮和导入按钮要顶到现在标题的框
+   *     的位置。」
+   *
+   * So the row's height is now `headerTitleHeight()` **or 0**, and the header bar's height loses exactly
+   * that same term (`headerBarCollapsedHeight`). Three properties are derived from `titleHidden` here —
+   * this one, `opacity` and `translate` — plus one more in the bar's height helper, and the count is
+   * asserted.
+   *
+   * ## This IS a layout animation, deliberately, and the r118 objection does not survive the hysteresis
+   *
+   * r118 refused to reclaim the space because it would "grow the grid by ~44 vp **during the gesture**"
+   * (r118's own estimate; the exact term is `headerTitleHeight()`, 35.25 vp), naming r109's whole-row
+   * pop in this very grid and the reader re-paginating when a bar changed its measured page box. Both
+   * of those are real, and neither is what this is:
+   *
+   *  - **The reflow happens once per toggle, not once per frame.** The decision is not taken here and
+   *    not taken per frame: `Index.onShelfTitleScroll` reads a **cumulative** offset against a 24 vp
+   *    hide threshold and a 12 vp show threshold, so a 12 vp band of hysteresis stands between the two
+   *    states and the flag can only flip on a movement that crosses the band. Between the crossings
+   *    `titleHidden` is constant, so the layout is constant — and scrolling inside the band changes
+   *    nothing at all.
+   *  - **Growing the grid's *box* is not re-paginating its content.** r109's pop was a `Grid` with a
+   *    bottom **`padding`**, where ArkUI refuses to draw a child that begins wholly inside the padding
+   *    band (「如果子组件完全位于padding区域内，则不会显示」) and so admitted a row whole and in one
+   *    frame. That mechanism needs padding, and this grid still has none — its bottom clearance is
+   *    `contentEndOffset`, deliberately, and r119 leaves both that call and its call site untouched.
+   *    The grid's rows are height-derived from the **column width** (`GridItem` → an `aspectRatio` cover
+   *    in a `columnsTemplate` grid), not from the grid's own height, so the 35.25 vp the box gains
+   *    reveals 35.25 vp more of the next row and moves no row's top edge. It is the same thing that
+   *    happens when the user scrolls by 35.25 vp, which is the gesture already in progress.
+   *  - **The reader is not this case either.** Its re-pagination came from a *measured page box* handed
+   *    to Reader Kit; nothing here is measured by, or reported to, anything.
+   *
+   * What has NOT changed is the mechanism's shape: the collapse rides the same motion-gated animation
+   * the fade does (`Index.applyShelfTitleHidden`), so with 「设置 → 动画」 off it snaps to the final
+   * geometry in one frame — no tween, and no `duration: 0`.
    *
    * The movement is upward, which is the direction the gesture is going, so the title reads as receding
-   * rather than as sliding sideways out of a header that is staying put.
+   * rather than as sliding sideways out of a header that is staying put. The text is not clipped while
+   * it goes: a `Row` does not clip by default, `opacity` reaches 0 on the same curve, and adding
+   * `clip(true)` here would cut the glyphs mid-slide for no gain.
    */
   @Builder
   private headerTitle() {
@@ -1559,7 +1699,7 @@ export struct ShelfPage {
         .textOverflow({ overflow: TextOverflow.Ellipsis })
     }
     .width('100%')
-    .height(this.headerTitleHeight())
+    .height(this.titleHidden ? 0 : this.headerTitleHeight())
     .opacity(this.titleHidden ? 0 : 1)
     .translate({ y: this.titleHidden ? -HEADER_TITLE_HIDE_OFFSET : 0 })
   }

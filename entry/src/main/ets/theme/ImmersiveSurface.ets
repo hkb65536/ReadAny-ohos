@@ -121,6 +121,51 @@ export function immersiveTopBarMaterialOption(): Object {
   });
 }
 
+/**
+ * The material for the **shelf's header bar**: the same `THIN` layer as the reader's top bar, with
+ * 自动反色 switched on.
+ *
+ * ## Why it is a second function rather than a parameter on the reader's
+ *
+ * `immersiveTopBarMaterialOption` above is the reader's material, and the reader's top bar is
+ * verified work (r112/r113/r116). It is deliberately left byte-identical, so this round's claim about
+ * the reader is that **nothing in its recipe changed** — a claim a defaulted parameter could not make,
+ * and one the audit can check by name.
+ *
+ * ## What `colorInvert` is, and why it is `true` here
+ *
+ * `ImmersiveOptions.colorInvert` (`@ohos.arkui.uiMaterial.d.ts:380`, `@since 26.0.0`, default
+ * **false**) is what makes a material's subtree adapt a colour to the material's own backdrop:
+ *
+ *   「设置了材质对象的节点的子树是否自动将颜色适配为材质背景色的反色。若为 false，则不会自动反色。
+ *     若为 true，则当材质样式满足系统定义的反色条件时才会自动反色。」
+ *
+ * It is **not** a licence for hardcoded colours to invert. The same reference fixes the whole
+ * condition list (沉浸光感常见问题 · 开启自动反色后文字颜色没有变化) and names the resource set that
+ * participates — 表1 · 特殊资源值对应的深浅色值 — so a palette constant stays exactly as written.
+ * Two of its three conditions are properties of the surface rather than of this app: the device must be
+ * high- or mid-compute (`SMOOTH` inverts nothing), and the style must be `THIN` or `ULTRA_THIN`
+ * (「材质样式需要为THIN或ULTRA_THIN，在REGULAR、THICK、ULTRA_THICK样式下不生效」 — `THIN` already).
+ *
+ * ## The one place it is spent, and why that is the documented 正例
+ *
+ * 沉浸光感 · 功耗优化 gives this exact shape as its **正例** — 「缩小反色范围，仅对需要保证可读性的局部
+ * 区域开启反色」, a small local container with 「多数内容不开启反色」 around it — and its 反例 is the
+ * opposite (a material over a long list, where 「所有子项颜色都参与计算」). The caller puts this on the
+ * header's own bar-filling container, which holds a title, a search field and two 48 vp circles and
+ * nothing else; the grid is outside the title bar entirely.
+ *
+ * Same guarded contract as its two siblings: only reachable through a `Theme.ets` decision function
+ * that has already checked the API level and the device's support, so an API-24 device never evaluates
+ * the API-26 namespace.
+ */
+export function immersiveHeaderBarMaterialOption(): Object {
+  return new uiMaterial.ImmersiveMaterial({
+    style: uiMaterial.ImmersiveStyle.THIN,
+    colorInvert: true,
+  });
+}
+
 /** Whether the device reports support for the immersive effect. */
 export function deviceSupportsImmersiveMaterial(): boolean {
   if (!canApplyImmersiveMaterial()) {

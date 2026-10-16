@@ -397,15 +397,17 @@ export const PLACEHOLDER_TITLE_LINES: number = 5;
 /**
  * How far the 书架 title travels up while it is fading out, in vp.
  *
- * The title is a **render-only** animation on purpose. It lives in the shelf's header `Row`, whose
- * height is also the `Navigation` title bar's height and therefore also the amount the grid is
- * pushed down by — so animating its `height`, `padding` or `margin` would reflow the grid in the
- * middle of a scroll gesture, which is the class of defect this project has fought (r109's 书架 pop,
- * the reader's re-pagination). `opacity` and `translate` are both render-time only, so the grid's
- * measured box is byte-identical with the title shown and hidden.
+ * 12 vp is a little under half the title's own line box, so it reads as the title receding rather than
+ * as the header resizing.
  *
- * 12 vp is a little under half the title's own line box, so it reads as the title receding rather
- * than as the header resizing; the space it leaves is reserved, not reclaimed.
+ * **r119 correction: the space it leaves is now reclaimed, and this constant is no longer the only
+ * thing moving.** r118 read this number as "the title fades and slides inside a space that stays put"
+ * and wrote that the reserved space was deliberate. The user rejected that: 「我不是只想文字消失，我是想
+ * 那块区域也消失。也就是说…搜索框、同步按钮和导入按钮要顶到现在标题的框的位置。」 So the row's `height`
+ * now collapses to 0 alongside this travel and the bar loses the same term —
+ * `ShelfPage.headerTitle` carries the argument for why a layout property is acceptable here (the
+ * collapse happens once per toggle across a 12 vp hysteresis band, and growing the grid's *box* is not
+ * re-paginating its content the way r109's bottom-padded `Grid` did).
  */
 export const HEADER_TITLE_HIDE_OFFSET: number = 12;
 

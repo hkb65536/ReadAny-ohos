@@ -306,7 +306,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r118 (shelf-header-immersive-material)';
+export const BUILD_STAMP: string = 'build 2026-10-16 r119 (header-collapse-and-clear-actions)';
 
 /**
  * A byte count as something a person can read.
@@ -713,14 +713,23 @@ struct Index {
    * "from" value for a component that never leaves, which is the same reason the reader's two floating
    * bars use `animateTo` (`ReaderView.toggleBars`) rather than a transition.
    *
-   * ## Only render properties, and that is a hard constraint
+   * ## One layout property joins the two render-only ones (r119), and why that is now correct
    *
    * The title's row is also the title bar's content, so the bar's height is what pushes the grid down.
-   * Animating `height`, `padding`, `margin` or `layoutWeight` would reflow the grid **during the
-   * gesture** — the class of defect this project has already paid for twice (r109's whole-row pop in
-   * this very grid, and the reader's re-pagination when a bar changed the measured page box). So the
-   * title's space is **reserved and the title only fades and slides**: `ShelfPage.headerTitle` derives
-   * `opacity` and `translate` from this flag and nothing else.
+   * r118 animated `opacity` and `translate` only and **reserved** the title's line box, on the grounds
+   * that reclaiming it would reflow the grid during the gesture — r109's whole-row pop in this very
+   * grid, and the reader re-paginating when a bar changed its measured page box.
+   *
+   * The user corrected that arrangement (「我不是只想文字消失，我是想那块区域也消失。也就是说…搜索框、
+   * 同步按钮和导入按钮要顶到现在标题的框的位置。」), and the objection does not survive the hysteresis:
+   * this method is only reached from `onShelfTitleScroll`, which reads a **cumulative** offset against
+   * two thresholds 12 vp apart, so the flag — and therefore the layout — changes **once per crossing**
+   * and never per frame. `ShelfPage.headerTitle` carries the rest, including why a taller grid *box* is
+   * not r109's re-pagination: the rows there are height-derived from the column width and the grid still
+   * has no bottom padding.
+   *
+   * So `animateTo` now tweens a height as well, and it is the only height it tweens — the header's own
+   * height and the title row's, from the one pair of helpers on `ShelfPage`.
    *
    * ## `animationOn` is the gate, and "off" means no tween at all
    *
