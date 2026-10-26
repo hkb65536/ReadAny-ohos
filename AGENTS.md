@@ -16,7 +16,7 @@
 
 - 工作目录：`D:\Code\ReadAny-ohos`
 - 鸿蒙工程：**与工作目录同一个目录** —— 仓库根就是工程根（`build-profile.json5`、`build.bat`、`entry/`、`core/`、`data/`、`sync/` 直接在最外层）。**旧的 `harmony/` 子目录布局已不存在**
-- 参照实现：**本机未检出**上游 ReadAny。下文 `ReadAny/…` 一律指另行检出的上游仓库（[codedogQBY/ReadAny](https://github.com/codedogQBY/ReadAny)），**只读，绝不修改**
+- 参照实现：**`D:\Code\ReadAny`**（[codedogQBY/ReadAny](https://github.com/codedogQBY/ReadAny)），**只读，绝不修改**。**已固定在 `v1.3.6`**（分支 `pinned-v1.3.6`，commit `8d3f74a1`），v1.3.6 之后的提交与分支引用**已从本地清除** —— 见 §12.8
 - 调研产出 `docs/`、诊断/证据/探针脚本 `.diag/`、审计套件 `tools/`：**都不在本仓库**。文中这些路径是**历史记录**；`tools/` 缺失意味着 §3.2 的 30 工具审计在本工作区跑不了
 - **代码托管**：**仓库根自己就是 git 仓库**（`D:\Code\ReadAny-ohos\.git`，就地 `git init`），`origin` = `https://github.com/hkb65536/ReadAny-ohos.git`，分支 `main` —— 详见 **§12**
 
@@ -27,6 +27,12 @@
 > 例：`harmony/entry/src/main/ets/pages/ShelfPage.ets` = `entry/src/main/ets/pages/ShelfPage.ets`；`harmony/entry/build/…/entry-default-unsigned.hap` = `entry/build/…/entry-default-unsigned.hap`（后者才是本仓库的真实产物路径）。
 >
 > 本轮只改**现行生效**的路径（§1、硬约束、§3 命令、§4.2、§12）与产物路径；历史轮次的正文保留原文，以保持「当时到底跑了什么」可追溯。
+
+> **⚠️ 参照实现的版本口径（2026-10-26，r124）**
+>
+> `D:\Code\ReadAny` **不是 main**，是 **`v1.3.6`** 的标签提交。两个直接后果：
+> 1. **v2 协议在 v1.3.6 里不存在** —— `packages/core/src/sync/per-book-sync.ts`（1085 行）是 **main 独有**，main 比 v1.3.6 领先 **77 个提交**。所以「已发布的桌面端只讲 v1」这条前提现在有本地证据，不再是从别处推断的。
+> 2. **本文档里 `simple-sync.ts:396-418` 这类行号是 main 的行号**。在 v1.3.6 检出里，`if (!options.forceApply && deletedAt > 0)` 在 **:381**、`if (deletedAt > 0)` 在 **:393** —— 语义一致（`deletedAt <= 0` 时整段 `if` 被跳过，那条 DELETE 无条件执行）。
 
 - **开源协议**：本移植是 ReadAny（**GPL-3.0-or-later**）的衍生作品，`LICENSE`/`NOTICE`/`README.md` 已补齐并推送 —— 详见 **§12.6**
 
@@ -47,7 +53,7 @@
 
 | # | 约束 | 为什么 |
 |---|---|---|
-| 1 | **绝不修改另行检出的上游 `ReadAny/` 下任何文件** | 它是参照物。若本机检出过，每轮结束可用 `git -C <ReadAny 路径> status --porcelain` 应为空 + 无今日 mtime 来自证。**本工作区当前没有检出它** |
+| 1 | **绝不修改另行检出的上游 `ReadAny/` 下任何文件** | 它是参照物。若本机检出过，每轮结束可用 `git -C <ReadAny 路径> status --porcelain` 应为空 + 无今日 mtime 来自证。**现在已检出在 `D:\Code\ReadAny`，固定 `v1.3.6`，只读** |
 | 2 | **不动 `data/src/main/ets/Rdb.ets` 的 `queueBusy` 重入守卫**（声明 ~:117，置位 :131，清除 :135，早返回 :138） | 它修掉了一个**已验证的死锁**：`runWithRetry` 把写入串行化，而 `updateReadingPosition` 在事务里调 `getDeviceId()`，后者在冷缓存时排到自己后面 → **所有写入（设置、`last_sync_at`、阅读位置）全部静默卡死**。表现为 `start` 打 3 次而 `done`/`failed` 0 次、WAL 冻结在 0 字节 |
 | 3 | **三个破坏性同步操作只存在于注释**：`cleanupRemoteOrphans`、`cleanupLocalOrphans`、`migrateBookRemoteState` | 由 `tools/verify-sync-routing.mjs` 断言（它从 `WebDavClient.ets` 反推传输层的删除/移动方法名）。**远端从不发出删除**；`deletePath` 零调用者 |
 | 4 | **绝不设 `forceApply`** | `SyncRouter.ets:196` = false，`SyncV1.ets:383` = false |
@@ -65,7 +71,7 @@
 2. **绝不发出 `deletedIds` 却没有配对的 `deletedTimestamps`，且时间戳必须是有真实毫秒值 `> 0`**
 3. **绝不在 `deletedIds` 非空时给出空/缺失的 `deletedTimestamps`**
 
-**接收端（r121 更正：原来那句话只描述 ReadAny，不描述我们）。** ReadAny 的时间戳守卫**只在 `deletedAt > 0` 时才存在**（`ReadAny/packages/core/src/sync/simple-sync.ts:396-418`，形状是 `const deletedAt = tableData.deletedTimestamps?.[deletedId] ?? 0; if (!options.forceApply && deletedAt > 0) { … if (localTs > deletedAt) { skip } }`，之后直接 `DELETE FROM …`）——**`deletedAt <= 0` 把整个 `if` 跳过，于是那条 DELETE 是无条件的**。
+**接收端（r121 更正：原来那句话只描述 ReadAny，不描述我们）。** ReadAny 的时间戳守卫**只在 `deletedAt > 0` 时才存在**（`ReadAny/packages/core/src/sync/simple-sync.ts:396-418`，**这是 main 的行号；v1.3.6 检出里在 `:381`/`:393`**，形状是 `const deletedAt = tableData.deletedTimestamps?.[deletedId] ?? 0; if (!options.forceApply && deletedAt > 0) { … if (localTs > deletedAt) { skip } }`，之后直接 `DELETE FROM …`）——**`deletedAt <= 0` 把整个 `if` 跳过，于是那条 DELETE 是无条件的**。
 
 **我们自己的实现有四道闸门，都在 `SyncV1.ets`**：`:1345`（同一 payload 里有活跃行 ⇒ 当作过期墓碑）、`:1356`（`unjustifiedDeletions`：`deletedTimestamps` 里没有有效值 ⇒ 拒绝）、`:1368`（`isPlausibleTombstone` ⇒ 忽略）、`:1383`（`deletedAt >= localUpdatedAt`，见 `ShouldApply.ets:111-116`）。**所以 `deletedAt <= 0` 的 DELETE 路径在我们代码里不可达。** 与参照实现对照（**时间戳那侧：它一道、我们三道，多三道**）：`unjustifiedDeletions`、`isPlausibleTombstone`，以及把顺序比较放到 `deletedAt > 0` 之外跑（参照实现只在正时间戳时才比较）；第四道 `:1345` 两边都有——参照实现在 `simple-sync.ts:387-394` 对同一 payload 里的活跃行同样跳过。
 
@@ -353,6 +359,16 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 ---
 
 ## 9. 进行中的工作
+
+### r124：把上游参照实现固定到 `v1.3.6`（外部检出；本仓库只有 `AGENTS.md` 改动）
+
+**用户要求**：「在 `D:\Code\ReadAny` 把 codedogQBY/ReadAny 拉下来」「定到 v1.3.6，之后的代码不要」。
+
+**做了什么**（全部在 `D:\Code\ReadAny`）：经 SOCKS 代理克隆 → `checkout -B pinned-v1.3.6 v1.3.6` → 删 `main`、删 **98 个** `refs/remotes/origin/*`、收窄 fetch refspec → `reflog expire` + `gc --prune=now`（unreachable 提交 **0**，`.git` 54.4 → 47.6 MB）。终态与恢复办法见 **§12.8**。
+
+**两条必须记住的事实**：① **v2 协议不在 v1.3.6 里**（`per-book-sync.ts` 是 main 独有，main 领先 77 个提交）；② **本文档旧的行号引用是 main 的**——`simple-sync.ts:396-418` 在 v1.3.6 里实际是 **:381 / :393**。详见 §1 的「参照实现的版本口径」与 §2 的就地标注。
+
+**没有动**：本仓库任何源码、`README.md`、`LICENSE`/`NOTICE`；没有构建、没有安装。审计基线**仍不可测**（`tools/` 不在本仓库）。
 
 ### r123：仓库布局统一（**仅文档，无代码改动**）
 
@@ -1192,6 +1208,29 @@ build.bat --install assembleHap ...   →   hvigorw --install assembleHap ... --
 ```
 
 **用户尚未决定是否修 `build.bat`。**
+
+### 12.8 上游参照实现的本地检出（`D:\Code\ReadAny`，固定 `v1.3.6`）
+
+| 项 | 值 |
+|---|---|
+| 路径 | `D:\Code\ReadAny` |
+| 远端 | `https://github.com/codedogQBY/ReadAny.git`（clone 时经本机 SOCKS 代理，直连会被 reset） |
+| HEAD | `8d3f74a1` `fix(ci): give Android R8 more heap`（2026-08-16）＝ **tag `v1.3.6`** |
+| 分支 | 只有 `pinned-v1.3.6`（`main` 与 **98 个** `refs/remotes/origin/*` **已删除**） |
+| tag | 33 个，**全部在 v1.3.6 的历史之内**（没有一个指向其后） |
+| 对象 | 可达提交 1104，unreachable **0**；`.git` 54.4 → **47.6 MB** |
+| 工作区 | 32.1 MB / 1395 文件，`git diff v1.3.6` 为空 |
+
+**为什么删掉 main 与 98 个远程分支引用**：用户明确要求「定到 v1.3.6，之后的代码不要」。只删 `main` 不够——那些 `origin/*` 分支也指向 v1.3.6 之后的工作，留着它们会让后来的 `git log --all` 和 `git grep` 看见不属于 v1.3.6 的代码，等于「之后的代码」还在。
+
+**防止重新拉回**：`remote.origin.fetch` 已收窄为 `+refs/tags/v1.3.6:refs/tags/v1.3.6`，所以误跑 `git fetch` 不会把 main 和那些分支带回来。
+
+**恢复全部历史**（需要时，经代理）：
+
+```powershell
+git -C D:\Code\ReadAny config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git -C D:\Code\ReadAny -c http.proxy=socks5h://127.0.0.1:10808 fetch origin
+```
 
 ---
 
