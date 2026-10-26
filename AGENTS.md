@@ -333,6 +333,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 | 半模态顶部的横条 + 背景不统一 | ① `.bindSheet` 没设 `backgroundColor`，`BindOptions.backgroundColor` **默认 `Color.White`**；② **`dragBar` 默认 true**，平台拖拽胶囊画在容器背景上、位于内容之上的一条带里 | `backgroundColor: this.sheetCard()` + `dragBar: false` + `showClose: false` |
 | `SheetSize.MEDIUM` 不是「一半」 | **它是 60%**（参考文档 + `mediumPercent_ = 0.6` 两处独立来源）。`common.d.ts` 里那句 "half the screen height" 是 API 10 时代的陈旧注释 | 要字面一半用 `height: '50%'`（基准是 `窗口高 − sheet 顶部安全区`） |
 | `detents` 和 `dragBar: false` 冲突？ | **不冲突**——拖拽条会被显式隐藏。**真正的理由**：设了 `detents` 后 `height` 被忽略、面板可跟手拖离该高度 | 要固定高度就不要 `detents` |
+| **同步后进度倒退**：手机上显示 70%，桌面 80%；再同步后连桌面也被改成 70% | 本地位置缓存优先（`ReaderStore.resolveOpenPosition`）+ 每次写回都用 `nextUpdatedAt`（`max(now, 行+1)`）刷新 `updated_at` → 旧进度永远"最新"，远端永远赢不了 | r126：值没变就不刷新时间戳；行比缓存新则以行为准；赢下的 payload 只有 CFI 时**同时**清缓存与行上的 `spine/domPos` |
 | 构建跑到 `PackageHap` 报 `spawn java ENOENT`（`00308018`） | DevEco 自带 JBR 但**没进 PATH**、`JAVA_HOME` 为空；打包步骤靠 `java` | `build.bat` 已自动设 `JAVA_HOME=%DEVECO_HOME%\jbr`；手工调 hvigorw 前先 `& .\scripts\env.ps1` |
 
 ---
@@ -412,6 +413,61 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 ---
 
 ## 9. 进行中的工作
+
+### r126：修「同步后进度倒退」——三个 bug 叠成的死循环（**已构建，未上机**）
+
+**用户原话**：「我装了 r122，但是同步还是有问题」。实测到的最坏结果：新电脑 `c7cd6c92` 的牧神记 **80.0142% 被手机覆盖成 69.5865%**，`last_modified_by` 变成手机的 device id，CFI 也被换掉。**这不是显示问题，是数据被反向覆盖。**
+
+#### 现场（服务器 + 真机日志，均为实测）
+
+| 设备 | progress | current_cfi | spine/domPos | updated_at |
+| --- | --- | --- | --- | --- |
+| 手机 `4aeac148` | 0.6958650 | `epubcfi(/6/2558)` | 1278 / `9=0#0;@;0` | **21:42:42** |
+| 新电脑 `c7cd6c92` | 0.8001420 → **0.6958650** | `/6/3000!…` → **`/6/2558`** | 无 | 21:33:23 → **21:42:42** |
+| 老桌面 `c890b8f3` | 0.8024562 | `/6/3008!/4,/80,/104/1:45` | 无 | 17:28:16 |
+
+真机日志（21:47:53 那次同步）：`PROPFIND → HTTP 207, 6 of 7`、`applying books: 22 record(s)` ×2、`index updated with 3 device(s)`。状态行「应用 108 条，跳过 676 条，**其他设备 2 台**」——**设备发现正常，同步也确实在跑**。
+
+**决定性证据**：手机 21:28 与 21:47 两份快照的 `progress`/`current_cfi`/`current_spine`/`current_dom_pos` **四个字段逐字节相同**，只有 `updated_at` 从 21:27:47 变成 21:42:42。一次不携带任何信息的写入，单方面决定了后面所有合并的胜负。
+
+#### 根因：四环相扣
+
+1. `ReaderStore.ets:241` 旧 `resolveOpenPosition` **无条件缓存优先**，且缓存是 r122 之前留下的 70%（r122 只防新增、不追溯）；
+2. `ReaderView.ets:711` `lastReportedSpine = -1` + `:1574` 相等判断 ⇒ **首屏必上报**，所以"只要打开这本书"就会触发一次写回；
+3. `Books.ets:186` `nextUpdatedAt('books', id)` = `Math.max(now, 当前行+1)`（`Database.ets:162-176`）⇒ **写回必然比它替换的那一版更新**；
+4. `SyncV1.ets:1017-1054` upsert「payload 里没有的列不动」⇒ 行上长期并存 80%（`progress`/`current_cfi`）与 70%（`spine`/`dom_pos`）。
+
+⇒ 旧进度永远最新、远端永远输、r122 的对齐分支（只在远端赢时执行）**一次都跑不到**。
+
+#### 一个必须记住的新事实（r122 未验部分的真相）
+
+**`initialCfi` 只在 `initialSpine < 0` 时才被使用**（`Index.ets:3282-3287` 传参、`ReaderView.ets:1199-1206` 分支）。所以 **r122 的「清缓存」并不够**：行上的旧 `spine`/`domPos` 还在，`resolveOpenPosition` 会从行里把它读出来，`initialSpine` 仍为正数，CFI 根本不会被读——这正是用户"点进去还是 70%"的直接原因。
+
+#### 改动（三个文件 + 两处配套）
+
+| 改动 | 位置 | 作用 |
+| --- | --- | --- |
+| 位置列全等 → 不刷新版本 | `Books.updateReadingPosition` | 只更新 `last_opened_at`；返回行的 `updated_at` 供溯源。挡住"打开一次就变最新" |
+| `ReadingPosition.sourceUpdatedAt` | `ReaderStore`（字段 + 存取 + `resolveOpenPosition`） | 记录"这条缓存对应哪一版行"；`book.updatedAt > sourceUpdatedAt` 时**以行为准**。老缓存读回 `0` ⇒ 自动自愈 |
+| 清缓存时**同时**清行上的对 | `PositionWriteThrough` CLEAR 分支 + 新增 `Books.clearSyncedPosition` | 让 `hasSyncedPosition` 变 false ⇒ `initialSpine = -1` ⇒ 真正用上 `initialCfi` |
+
+辅助点位：`Index.onReaderPosition` 继承打开时的 `sourceUpdatedAt`、`Index.persistPosition` 用返回值回写缓存、`ReaderView` 上报位置时 `sourceUpdatedAt: 0`（它看不到行）。
+
+**没有动**：线格式、`V1_SYNC_TABLES`、墓碑处理、`forceApply`、`Rdb.ets` 的 `queueBusy`。
+
+#### 构建
+
+`BUILD SUCCESSFUL`（clean 全量）。产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`，**1,956,119 字节**，sha256 **`185662d99ee1dc3269bc0d2e645ca44736d0cf01c10876a8676d1aa8e37558f0`**，未签名。改动的四个文件**没有出现在任何 ArkTS warning 里**。
+
+规则用真实数据做了离线推演（不是跑 `.ets`，是同一套判定逻辑）：场景 A 检出"四列全等 ⇒ no-op"、场景 B（仅 CFI 的行赢下）⇒ 清对后落到 `EMPTY → initialSpine=-1 → 用 initialCfi`。
+
+#### 未验（不许当成已验）
+
+**没有上机**。而且**修好代码不会自动把已经写坏的数据改回来**：手机当前那份 69.59% 的时间戳（21:42:42）仍比老桌面的 80.2456%（17:28:16）新。恢复顺序：
+
+1. 老桌面打开《牧神记》→ 翻一页 → 退出（把它那行刷成"现在"）→ 同步；
+2. 手机同步，**不要先打开书** → 拉到的 CFI-only 行会触发 CLEAR ⇒ 书架 80%、点进去开在 CFI 那一章；
+3. 新电脑再同步，拿回 80%。
 
 ### r125：把机器路径从仓库里抽出去（跨机开发）+ 首次在本机构建成功
 

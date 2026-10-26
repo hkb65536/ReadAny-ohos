@@ -1588,6 +1588,9 @@ export struct ReaderView {
       fraction: fraction,
       chapterTitle: this.chapterTitle,
       updatedAt: Date.now(),
+      // The shell stamps this from the position the reader opened with; the reader itself
+      // never sees the book row, so it has nothing honest to put here.
+      sourceUpdatedAt: 0,
     });
   }
 

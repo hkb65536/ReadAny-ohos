@@ -16,7 +16,7 @@
  * row and destroyed the desktop's 80 % too. That last step is the data loss: the bug did
  * not merely show the wrong page, it propagated the older position back.
  *
- * ## The rule, and why it needs no new timestamp
+ * ## The rule
  *
  * The engine has already decided that this row wins the **row-level** last-writer-wins
  * comparison (`shouldApplyRemoteRecord`) before it calls `upsert`. So "this row won" is a
@@ -39,7 +39,10 @@
  * property of where this code sits, not a promise it has to keep by checking something.
  * There is deliberately no comparison here: `books.updated_at` is not a position
  * timestamp and `last_opened_at` is not one either, which is the reason
- * `resolveOpenPosition` needs this seam in the first place.
+ * `resolveOpenPosition` needs this seam in the first place. The cache entry does record the
+ * row's version as `sourceUpdatedAt`, but that is provenance ("which row is this?"), not a
+ * claim about when the position was written — and `resolveOpenPosition` uses it only to ask
+ * whether the row has moved on since.
  *
  * ## Why a writer decorator rather than a hook inside `SyncV1`
  *
@@ -58,6 +61,7 @@
  */
 
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { Books } from './Books';
 import type { Database } from './Database';
 import {
   ReaderStore,
@@ -131,10 +135,14 @@ function stringColumn(record: WireRow, key: string, fallback: string): string {
 export class PositionWriteThroughWriter implements V1RecordWriter {
   private readonly inner: V1RecordWriter;
   private readonly store: ReaderStore;
+  private readonly books: Books;
 
   constructor(inner: V1RecordWriter, db: Database) {
     this.inner = inner;
     this.store = new ReaderStore(db);
+    // Same shape `SyncService` uses for its own book writes: a repository over the one
+    // `Database`, not a second connection.
+    this.books = new Books(db);
   }
 
   columnsOf(table: string): Promise<Set<string>> {
@@ -204,11 +212,21 @@ export class PositionWriteThroughWriter implements V1RecordWriter {
       return;
     }
     if (action === PULLED_POSITION_CLEAR) {
-      // Clearing makes `loadPosition` return the empty sentinel, so `resolveOpenPosition`
-      // falls through to the row the CFI came from — the same path a fresh install takes.
+      // **Two things have to go, not one.** Clearing the cache makes `loadPosition` return
+      // the empty sentinel, but `ReaderView` only consults the book's CFI when
+      // `initialSpine` is negative — and `initialSpine` comes from the row's `current_spine`,
+      // where this device's stale pair still sits (the payload did not carry that column, so
+      // `SyncV1` left it alone). Clearing the pair as well is what lets the payload's CFI
+      // decide, instead of leaving the shelf showing the peer's progress and the reader on
+      // this device's old page.
+      //
+      // Neither write bumps `updated_at`: this device is withdrawing a claim it can no
+      // longer support, not asserting a newer one.
       await this.store.clearPosition(bookId);
+      await this.books.clearSyncedPosition(bookId);
       hilog.info(DOMAIN, TAG,
-        'cleared the local position for book %{public}s: the winning row carries only a CFI',
+        'dropped the local position and its row pair for book %{public}s: the winning row '
+        + 'carries only a CFI',
         shortId(bookId));
       return;
     }
@@ -221,6 +239,10 @@ export class PositionWriteThroughWriter implements V1RecordWriter {
       // wrote the position, and asserting it here would re-introduce exactly the mistake
       // `resolveOpenPosition` documents.
       updatedAt: 0,
+      // It *is* the version of the row this entry now mirrors, which is what
+      // `resolveOpenPosition` compares against to decide whether the row has moved on
+      // since. That is a question about the row's provenance, not about the position's age.
+      sourceUpdatedAt: numberColumn(record, 'updated_at', 0),
     };
     await this.store.savePosition(bookId, position);
     hilog.info(DOMAIN, TAG,

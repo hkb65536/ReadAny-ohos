@@ -67,6 +67,59 @@ export interface AnnotationCounts {
   notes: number;
 }
 
+/**
+ * The position columns of one `books` row as they currently are on disk.
+ *
+ * A class rather than an interface literal: ArkTS refuses an object literal assigned to a
+ * type it cannot see structurally, and these five values are read as one unit.
+ */
+class StoredPosition {
+  progress: number = 0;
+  spine: number = 0;
+  domPos: string = '';
+  cfi: string = '';
+  updatedAt: number = 0;
+}
+
+function storedPositionOf(row: Row): StoredPosition {
+  const out: StoredPosition = new StoredPosition();
+  out.progress = row.num('progress');
+  out.spine = row.num('current_spine');
+  out.domPos = row.strOr('current_dom_pos', '');
+  out.cfi = row.strOr('current_cfi', '');
+  out.updatedAt = row.num('updated_at');
+  return out;
+}
+
+/**
+ * True when writing these values would leave every position column unchanged.
+ *
+ * `cfi === null` means "no CFI is computable on this device", and the UPDATE's `COALESCE`
+ * keeps whatever the row already holds in that case — so a null CFI cannot change the
+ * column either, and it must not be what makes a write look like news.
+ */
+function isSamePosition(
+  current: StoredPosition,
+  progress: number,
+  spine: number,
+  domPos: string,
+  cfi: string | null,
+): boolean {
+  if (current.progress !== progress) {
+    return false;
+  }
+  if (current.spine !== spine) {
+    return false;
+  }
+  if (current.domPos !== domPos) {
+    return false;
+  }
+  if (cfi !== null && current.cfi !== cfi) {
+    return false;
+  }
+  return true;
+}
+
 export class Books {
   private readonly db: Database;
 
@@ -157,13 +210,25 @@ export class Books {
    * overwriting a peer's CFI with an empty string would destroy information this
    * client cannot regenerate. That rule predates the write-back and is what the
    * `COALESCE` preserves.
+   *
+   * **A write that changes no position column does not touch `updated_at`.** That reads
+   * like a micro-optimisation and is not one: `nextUpdatedAt` returns
+   * `max(now, current + 1)`, so stamping a no-op made this device's row the newest on
+   * every peer, and a device whose local cache was stale could then never lose a merge —
+   * it re-stamped its stale page and overwrote peers that had read further. `last_opened_at`
+   * is still refreshed, because that column means "when this book was last opened" and is
+   * not a merge input.
+   *
+   * Returns the row's `updated_at` after the write (`0` when the row does not exist). The
+   * caller uses it as the provenance stamp of the reader's cached position, so that
+   * `resolveOpenPosition` can tell this cache from a row that has been pulled since.
    */
   async updateReadingPosition(
     id: string,
     progress: number,
     spineIndex: number,
     domPos: string,
-  ): Promise<void> {
+  ): Promise<number> {
     const clamped: number = progress < 0 ? 0 : progress > 1 ? 1 : progress;
     // `''` means "no CFI is computable"; `null` binds as SQL NULL and the `COALESCE`
     // then keeps the peer's existing value instead of blanking it.
@@ -181,7 +246,28 @@ export class Books {
     // reason to be part of the read-modify-write and keeping it outside means the
     // transaction covers only the version/value read and the `UPDATE`.
     const deviceId: string = await this.db.getDeviceId();
+    let resultingUpdatedAt: number = 0;
     await this.db.rdbHandle.writeTransaction(async (): Promise<void> => {
+      const stored: StoredPosition[] = await this.db.rdbHandle.select<StoredPosition>(
+        'SELECT progress, current_spine, current_dom_pos, current_cfi, updated_at'
+          + ' FROM books WHERE id = ?',
+        (row: Row): StoredPosition => storedPositionOf(row),
+        [id],
+      );
+      if (stored.length === 0) {
+        // Nothing to update and no version to report; the caller keeps whatever provenance
+        // stamp it had rather than recording a row version that does not exist.
+        return;
+      }
+      const current: StoredPosition = stored[0];
+      if (isSamePosition(current, clamped, spineIndex, domPos, cfi)) {
+        await this.db.rdbHandle.execute(
+          'UPDATE books SET last_opened_at = ? WHERE id = ?',
+          [Date.now(), id],
+        );
+        resultingUpdatedAt = current.updatedAt;
+        return;
+      }
       const syncVersion: number = await this.db.nextSyncVersion('books');
       const updatedAt: number = await this.db.nextUpdatedAt('books', id);
 
@@ -192,7 +278,31 @@ export class Books {
          WHERE id = ?`,
         [clamped, spineIndex, domPos, cfi, Date.now(), updatedAt, syncVersion, deviceId, id],
       );
+      resultingUpdatedAt = updatedAt;
     });
+    return resultingUpdatedAt;
+  }
+
+  /**
+   * Drop this device's own `current_spine` / `current_dom_pos` pair from a book row,
+   * leaving `progress`, `current_cfi` and every version column untouched.
+   *
+   * Needed because the pair is what the reader actually navigates by: `ReaderView` calls
+   * `startPlay(initialSpine, initialDomPos)` whenever `initialSpine >= 0` and consults the
+   * book's CFI only when it is negative. So when a winning pull carries a CFI but no pair,
+   * clearing the local cache is not enough — the row's stale pair would still win the
+   * navigation and the reader would open on the old page while the shelf showed the peer's
+   * progress. That split is exactly the reported 牧神记 bug.
+   *
+   * `updated_at` / `sync_version` are deliberately **not** bumped. This is not a position
+   * being asserted; it is the retraction of one this device can no longer support, and
+   * stamping it would publish an empty position as the newest thing anyone had read.
+   */
+  async clearSyncedPosition(id: string): Promise<void> {
+    await this.db.rdbHandle.execute(
+      'UPDATE books SET current_spine = 0, current_dom_pos = \'\' WHERE id = ?',
+      [id],
+    );
   }
 
   /** Flush any book stuck in `downloading` after the app was killed mid-transfer. */

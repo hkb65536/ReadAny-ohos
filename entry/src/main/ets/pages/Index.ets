@@ -1672,6 +1672,10 @@ struct Index {
    * session from being lost.
    */
   private onReaderPosition(position: ReadingPosition): void {
+    // The report descends from the position the reader opened with, so it inherits that
+    // entry's provenance: the row version this session started from. `persistPosition`
+    // replaces it with whatever version its own write produced.
+    position.sourceUpdatedAt = this.readerPosition.sourceUpdatedAt;
     this.readerPosition = position;
     this.pendingPosition = position;
     this.pendingBookId = this.openBook !== undefined ? this.openBook.id : '';
@@ -1743,8 +1747,9 @@ struct Index {
     this.committedBookId = bookId;
 
     // Best-effort and independent: the shelf's progress and the synced columns.
+    let stamp: number = 0;
     try {
-      await bookRepository().updateReadingPosition(
+      stamp = await bookRepository().updateReadingPosition(
         bookId,
         position.fraction,
         position.spineIndex,
@@ -1752,6 +1757,23 @@ struct Index {
       );
     } catch (err) {
       hilog.warn(DOMAIN, TAG, 'updateReadingPosition failed: %{public}s', String(err));
+    }
+
+    // Record which version of the row this cache entry now describes. Without it the next
+    // open cannot tell "my own last page" from "a row a peer replaced since", and
+    // `resolveOpenPosition` would keep preferring this cache even after a pull moved the
+    // row on -- the loop that let one device's stale page overwrite two others' progress.
+    // Best-effort: the position itself is already durable, so a failed stamp only costs
+    // one extra row-wins round on the next open, never the page.
+    if (stamp > 0 && position.sourceUpdatedAt !== stamp) {
+      position.sourceUpdatedAt = stamp;
+      try {
+        await reader().savePosition(bookId, position);
+      } catch (err) {
+        hilog.warn(DOMAIN, TAG,
+          'position provenance stamp not persisted for book %{public}s: %{public}s',
+          bookId, String(err));
+      }
     }
   }
 

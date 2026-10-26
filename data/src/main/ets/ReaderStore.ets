@@ -180,6 +180,17 @@ export interface ReadingPosition {
   /** Chapter title for the header, when the TOC provided one. */
   chapterTitle: string;
   updatedAt: number;
+  /**
+   * `books.updated_at` of the row version this entry was last aligned with; `0` when that
+   * is unknown — a fresh entry, a page the reader reported but nothing has written back
+   * yet, or an entry written by a build that predates this field.
+   *
+   * **Not** "when the position was written", and never compared against a peer's position
+   * timestamp. It answers one narrower question that `resolveOpenPosition` needs: *has the
+   * book row moved on since this cache was filled?* A pull only leaves a row untouched
+   * when it applied nothing to it, so the row's own version answers that exactly.
+   */
+  sourceUpdatedAt: number;
 }
 
 /**
@@ -199,6 +210,10 @@ export function emptyPosition(): ReadingPosition {
     fraction: 0,
     chapterTitle: '',
     updatedAt: 0,
+    // Nothing has been aligned with a row yet, so any row that carries a position is
+    // newer than this entry. That is what lets a broken install heal itself instead of
+    // holding its first page forever.
+    sourceUpdatedAt: 0,
   };
 }
 
@@ -210,9 +225,11 @@ export function hasPosition(position: ReadingPosition): boolean {
 /**
  * The position a book should open at.
  *
- * **A local position wins when there is one; the synced columns on the book row are
- * the fallback.** That order is a choice, and it is made because no timestamp in the
- * schema can honestly say which of the two was written later:
+ * **The row wins when it has moved on since this cache was filled; otherwise the local
+ * position wins.** The test is `book.updatedAt` against the cache's `sourceUpdatedAt` —
+ * the row version that entry was aligned with — so it answers "has anything been applied
+ * to this row since?", not "which position was written later?", which no column can
+ * answer:
  *
  *  - `books.updated_at` is bumped by every edit to the row — a chapter count, a tag,
  *    a cover — and by every remote pull, so a newer `updated_at` does not mean a
@@ -226,34 +243,69 @@ export function hasPosition(position: ReadingPosition): boolean {
  *    timestamp would let a desktop *open* make a stale chapter look newer than the
  *    page the user last read here.
  *
- * The tradeoff, stated rather than hidden: a book already read on this device keeps
- * this device's position even when a peer has read further, because the peer's
- * position arrives in columns whose write time is not recorded. **That preference lasts
- * only until the next pull applies a winning row for this book**: the local entry is a
- * cache, and `PositionWriteThrough` reconciles it with the position the winning row
- * carries (setting it when the row has a usable pair, clearing it when the row has only
- * a CFI). The one thing that must never happen — and does not — is a local position
- * being destroyed by a row that *lost* the merge: the engine calls the writer only for
- * a row that won. What the fallback below fixes is the case that was broken — a fresh
- * install, a reinstall, or any device that has never opened the book now starts at the
- * position a peer synced instead of at page 1.
+ * ## Why "the row moved on" has to beat the cache
+ *
+ * The rule used to be "a local position always wins, because nothing can rank the two".
+ * On its own that made a stale cache **immortal**: `persistPosition` writes the cache's
+ * position back to the row and `Books.updateReadingPosition` stamps it with
+ * `max(now, row + 1)`, so the device that writes last is always the newest — even when
+ * what it wrote is the older page. Measured on a real phone: opening 牧神记 re-stamped
+ * 69.5865 % with a fresh `updated_at` **without changing a single position column**, and
+ * that row then beat a desktop's 80.2456 % and a second desktop's 80.0142 %, overwriting
+ * both. `sourceUpdatedAt` closes the loop: once a pull has applied anything to the row,
+ * the row outranks an entry that predates it, the reader opens at the row's position, and
+ * the write-back carries *that* position instead of the stale one.
+ *
+ * Entries written before this field existed read back as `sourceUpdatedAt: 0`, which is
+ * older than any real row version — so a device broken by the old rule heals on the next
+ * open instead of needing its data deleted.
+ *
+ * ## What this still cannot promise
+ *
+ * `books.updated_at` moving does not prove the *position* moved: a tag edit or a cover
+ * change bumps it, and the row's position columns may then hold a page this device has
+ * already passed. When that happens the row wins once, at the cost of at most the pages
+ * read since that row version was cached. That is the price of never letting a stale cache
+ * outrank a pull, and it is the same trade the merge itself makes. The alternative — the
+ * old rule — is what let one device's stale page destroy two others' progress.
+ *
+ * `PositionWriteThrough` still reconciles the cache when a winning row is applied; this
+ * function no longer needs that to be the *only* moment the cache can be corrected.
+ * The one thing that must never happen — and does not — is a local position being
+ * destroyed by a row that *lost* the merge: the engine calls the writer only for a row
+ * that won.
  */
 export function resolveOpenPosition(local: ReadingPosition, book: Book): ReadingPosition {
+  const rowCarriesPosition: boolean = hasSyncedPosition(book);
+  // Strictly greater: an entry aligned with exactly this row version is still current.
+  if (rowCarriesPosition && book.updatedAt > local.sourceUpdatedAt) {
+    return positionFromBookRow(book);
+  }
   if (hasPosition(local)) {
     return local;
   }
-  if (!hasSyncedPosition(book)) {
+  if (!rowCarriesPosition) {
     return emptyPosition();
   }
+  return positionFromBookRow(book);
+}
+
+/**
+ * The row's synced position as a `ReadingPosition`.
+ *
+ * `updatedAt` is deliberately `0` rather than `book.lastOpenedAt`: the row does not record
+ * when its position columns were written, and asserting one would repeat exactly the
+ * mistake the rule above exists to avoid. `sourceUpdatedAt` records the row version this
+ * entry came from, which is what the next open compares against.
+ */
+function positionFromBookRow(book: Book): ReadingPosition {
   return {
     spineIndex: book.currentSpine,
     domPos: book.currentDomPos,
     fraction: book.progress,
     chapterTitle: '',
-    // Deliberately not `book.lastOpenedAt`: the row does not record when its
-    // position columns were written, and asserting one here would repeat exactly the
-    // mistake this rule exists to avoid.
     updatedAt: 0,
+    sourceUpdatedAt: book.updatedAt,
   };
 }
 
@@ -392,6 +444,7 @@ export class ReaderStore {
     record['fraction'] = position.fraction;
     record['chapterTitle'] = position.chapterTitle;
     record['updatedAt'] = position.updatedAt;
+    record['sourceUpdatedAt'] = position.sourceUpdatedAt;
     await this.db.setMeta(`${PREFIX_POSITION}${bookId}`, JSON.stringify(record));
   }
 
@@ -440,6 +493,9 @@ function positionFromRecord(record: Record<string, Object>): ReadingPosition {
     fraction: numberIn(record, 'fraction', 0),
     chapterTitle: stringIn(record, 'chapterTitle', ''),
     updatedAt: numberIn(record, 'updatedAt', 0),
+    // Absent in every entry written before this field existed; `0` means "older than any
+    // row version", which is the safe direction: the row wins and the cache is re-stamped.
+    sourceUpdatedAt: numberIn(record, 'sourceUpdatedAt', 0),
   };
 }
 
