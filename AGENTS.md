@@ -1378,3 +1378,104 @@ git -C $env:READANY_REF -c http.proxy=$env:READANY_PROXY fetch origin
 ## 13. 一句话总结这个项目的工作方式
 
 > **查证而不是猜测 · 测量而不是目视 · 如实说出做不到的部分 · 绝不削弱验证 · 先给方案再动代码。**
+
+---
+
+## 14. 划词高亮与「书签笔记」页：已查证、未实现（r127，2026-10-26）
+
+> 这一节记的是**结论和证据**，不是计划。代码一行没动——用户要求先重做该页布局。
+
+### 14.1 「书签笔记」页的两个 bug（已定位，未修）
+
+用户截图（22:37 / 22:38）：选「牧神记」时列表有 5 条高亮，但三个计数 chip 全是 0；切到「全部」却是空态。
+
+**Bug A —「全部」桶把书签和高亮清空**（`Index.ets:3369-3378`）：
+
+```ts
+if (this.annotationBookId.length === 0) {
+  this.annotationBookmarks  = [];
+  this.annotationHighlights = [];
+  this.annotationNotes = await noteStore().listRecent(50);   // 只取最近 50 条笔记
+```
+
+这个分支的语义是「最近笔记」，不是「全部标注」，注释里也是这么写的。但 UI 侧标签叫「全部」、chip 叫「书签/高亮/笔记」、空态文案写「打开一本书并添加书签或高亮，会显示在这里」——**实现与承诺不一致**。要做真「全部」，`bookmarkStore` / `highlightStore` 目前只有 `listForBook`，得加跨书查询。
+
+**Bug B — 计数 chip 永远停在首帧**（`AnnotationsPage.ets:310-318`）：
+
+```ts
+this.filterChip(`书签 ${this.bookmarks.length}`, this.showBookmarks, ...)
+```
+
+`filterChip` 是 `@Builder`，三个参数**全是按值传递**（string / boolean / 函数）。ArkUI 的规则是：`@Builder` 的值传递参数变化**不触发刷新**，只有按引用传递（`$$`）才会。所以文字在首次构建（数组还空）时定死成 `0`，之后数组变成 5 也不重画。列表是普通 `ForEach(this.merged())`，所以列表会刷新——这才出现「列表 5 条、计数 0」的自相矛盾。
+
+同一原因还有第二个症状：chip 的 `selected` 也是按值传，**点击 chip 隐藏某类标注时，chip 自己的选中样式不变**（列表会变，因为 `show*` 是 `@Link`）。
+
+真机证据：`uitest dumpLayout` 拿到的文本是 `书签 0` / `高亮 0` / `笔记 0`，同一页有 5 个 `第N章` 列表项。
+
+### 14.2 三种标注的定义
+
+三者都 `extends PositionedAnnotation { cfi: string; createdAt: number }`（`core/.../AnnotationOrder.ets:14`），**是名义继承，不是字段巧合**（ArkTS 无结构化类型）。
+
+| | `bookmarks` | `highlights` | `notes` |
+| --- | --- | --- | --- |
+| 定位 | `cfi` 一个点 | `cfi` **一个范围** | `cfi` **可为空** = 不锚定 |
+| 内容 | `label`（可选标签） | `text`（被划原文）+ `note`（可选附注） | `title` + `content`（Markdown） |
+| 外观 | — | `color`（red/yellow/green/blue/pink/purple/violet） | — |
+| 关联 | — | — | `highlight_id`（从哪条高亮派生） |
+| 共有 | `id` `book_id` `chapter_title` `created_at` `updated_at` `sync_version` `last_modified_by` | 同左 | 同左 |
+
+语义：书签＝「记着这里」；高亮＝「我划了这段」（`text` 存原文，`note` 是它**自己的附注字段，不是 `notes` 表**）；笔记＝「我自己写的」，可完全无位置。
+
+**本机能否新建**（这决定了该页能看到什么）：
+
+| 类型 | 能否新建 | 说明 |
+| --- | --- | --- |
+| 高亮 | **完全不能** | 没有 `onAddHighlight`；根因是 Reader Kit 无选择 API（见 14.3） |
+| 书签 | 数据通路在、UI 空态 | `onAddBookmark` → `createBookmark` → 同步都通，但 `bookmarkSheet` 只画空态（`ReaderView.ets:942-952` 写明表单被移除、字段保留） |
+| 笔记 | 同上 | `noteSheet` 空态，`onAddNote` 与两个字段保留未接线 |
+
+删除/编辑是通的（`onDeleteHighlight` / `onEditNote`）。所以那 5 条高亮是**从桌面端同步下来的**（日期 07-05 / 07-24，不是当天创建的）。
+
+### 14.3 划词高亮：能做，但必须换掉文字渲染层
+
+**Reader Kit 确实没有选择能力。** 官方《构建阅读器》原文：「构建书籍阅读能力共涉及 **5 个接口**」——`getDefaultHandler`、`init`、`setPageConfig`、`registerBookParser`、`startPlay`，翻页另有 `flipPage`。SDK 的 `@hms.core.readerservice.readerComponent.d.ets`（535 行）也全文核实过：`ReaderComponentController` 只有 `init / startPlay / flipPage / setPageConfig / releaseBook / registerBookParser` + `on/off('pageShow')` + `on/off('resourceRequest')`；`PageDataInfo` 只有 `pageHeaderContent / pageFooterContent / startDomPos / endDomPos / state / resourceIndex / pageOffset / nodeType / dataId`。**没有任何 select/selection/取文本的接口，也没有往页面上叠装饰的接口。**
+
+华为阅读能划词，不代表公开能力里有（那是系统应用，可用内部能力）。
+
+**公开 API 里的答案是 `SelectionContainer`（API 26.0.0+）。** 官方定义：「为多个文本节点提供跨节点文本选中、复制及菜单扩展能力，支持统一配置选中文本的手柄颜色和高亮颜色，支持灵活的文本拼接策略，支持自定义选择菜单和扩展菜单选项」。
+
+| 接口 | 作用 |
+| --- | --- |
+| `onTextSelectionChange(Callback<Array<string>>)` | 选中变化，按 Text 视觉顺序给出每段被选中的文本 |
+| `bindSelectionMenu(spanType, content: CustomBuilder, responseType, options?)` | **完全自定义菜单**（可复刻 5 色工具栏） |
+| `selectedBackgroundColor(color)` | 选中区域底色 |
+| `caretColor(color)` | 手柄颜色（默认 `#007DFF`） |
+| `editMenuOptions` | 在系统菜单上加扩展项 |
+| `textJoinStyle` | `NEWLINE` / `DIRECT` |
+| `SelectionContainerController` | `closeSelectionMenu()` / `clearTextSelection()` |
+
+**官方限制**：选中时不显示放大镜、不支持拖拽；`Repeat` 下的文本不参与跨节点选中（分页必须用普通 `ForEach`）；只有 `Text` 里的内容参与；容器内子 `Text` 的 `caretColor` / `copyOption` 以容器配置为准（不是子组件说了算）；不支持图形变换与隐私遮罩。
+
+**结论**：`ReadPageComponent` 是黑盒画布，塞不进 `Text`，所以「Reader Kit + 划词」在结构上不可能。必须自绘文本（`SelectionContainer` + 分页 `Text`），剩两件自研：**分页**（`Text` 不排版分页）与**锚点**（容器回调只给文本、不给偏移；子 `Text.onTextSelectionChange(start, end)` 给字符偏移，但容器内是否仍触发**文档未写，需实测**）。
+
+**动工前必须先验证三件事**：① 多个 `Text` 能否跨段连续选中；② 子 `Text` 的选择回调在容器内是否仍触发；③ `measureText` 分页与 Reader Kit 排版差多少。
+
+### 14.4 HarmonyOS 版本与 API 版本对应（本次查证，官方《所有 HarmonyOS 开发套件版本》）
+
+| 开发者版本（即 API 版本） | DevEco Studio | 发布时间 |
+| --- | --- | --- |
+| **26.0.0** | 26.0.0 Release | 2026/08/28 |
+| **6.1.1(24)** | 6.1.1 Release | 2026/05/26 |
+| 6.1.0(23) | 6.1.0 Release | 2026/04/20 |
+| 6.0.2(22) | 6.0.2 Release | 2026/01/21 |
+| 6.0.1(21) | 6.0.1 Release | 2025/11/20 |
+| 6.0.0(20) | 6.0.0 Release | 2025/09/25 |
+| 5.0.5(17) | 5.0.5 Release | 2025/05/14 |
+| 5.0.0(12) | 5.0.0 Release | 2024/10/22 |
+
+- **API 24 = HarmonyOS 6.1.1**；**API 26 = HarmonyOS 26.0.0**。
+- **没有 API 25**。官方原话：「根据 API 版本演进关系，API 版本 `6.1.1(24)` 的下一个版本为 `26.0.0`」。
+- 命名规则在 26 处变更：26 之前是 `X.Y.Z(N)`（N = OpenHarmony 底座 API level，如 `6.1.1(24)`），26 起是语义化 `X.Y.Z`（`26.0.0`）。这也解释了工程里 `compatibleSdkVersion: "6.1.1(24)"` 带括号、`targetSdkVersion: "26.0.0"` 不带。
+- 真机 `const.product.software.version` 报的是**发行版固件号**（`7.0.0.109`），与开发者 API 版本是两套编号；官方版本表里没有 `7.0.0` 这一行，不能按「7.0 ↔ 26」对号入座。
+
+**对划词取舍的影响**：`SelectionContainer` 是 26.0.0+，而工程 `compatibleSdkVersion` 是 `6.1.1(24)`。要么保持 24 + 做降级分支（6.1.1 及以下继续「按页标注」），要么抬到 26（能力统一，但 6.1.1 及更老设备装不上）。这是产品决定，不是技术决定。
