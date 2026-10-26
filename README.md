@@ -34,10 +34,15 @@
 ## 构建
 
 需要 DevEco Studio 与 HarmonyOS SDK（`compatibleSdkVersion` 6.1.1(24)、`targetSdkVersion` 26.0.0、
-`runtimeOS` HarmonyOS）。Windows 下自带的 `build.bat` 会把 `DEVECO_HOME` 指向你的 DevEco Studio
-安装目录（默认 `D:\DevEco Studio`）：
+`runtimeOS` HarmonyOS）。**路径不写死**：`build.bat` 按「`DEVECO_HOME` 环境变量 → 仓库根
+`AGENTS.local.md` → 常见安装路径探测」的顺序找 DevEco Studio（规则见 [AGENTS.md](AGENTS.md) §0，
+解析逻辑在 `scripts/env.ps1`）：
 
 ```powershell
+# 首次在新机器上：复制本机环境模板并填写（此文件不入库，每台机器一份）
+Copy-Item AGENTS.local.md.example AGENTS.local.md
+.\scripts\env.ps1 -Print    # 确认 DEVECO_HOME / READANY_REF / PROXY 解析正确
+
 # 先装依赖（ohpm）
 & "$env:DEVECO_HOME\tools\ohpm\bin\ohpm.bat" install --all
 # 再构建

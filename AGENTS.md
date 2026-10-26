@@ -8,21 +8,68 @@
 
 ---
 
+## 0. 本机环境与本机文件（**动手前先看这一节**）
+
+这个仓库要在**不止一台电脑**上开发，而且是**公开仓库**，所以：
+
+- **仓库里不写死任何一台机器上的绝对路径。**
+- 机器相关的值只活在**仓库之外**的两处：进程环境变量、仓库根的 `AGENTS.local.md`（**不入库**，每台机器一份）。
+- 仓库里只提交**没有真实值的模板** `AGENTS.local.md.example`。
+
+### 0.1 取值优先级
+
+| 顺序 | 来源 | 用途 |
+| --- | --- | --- |
+| 1 | 进程环境变量 `DEVECO_HOME` / `READANY_REF` / `READANY_PROXY` | 临时覆盖、CI |
+| 2 | 仓库根 `AGENTS.local.md` | 这台机器的真值 |
+| 3 | `scripts/env.ps1` 里的候选路径探测 | 两台机器都装在常见位置时，连文件都不用建 |
+| 4 | **问用户** | 以上都没有 |
+
+解析逻辑**只有一份**：`scripts/env.ps1`。`build.bat`、`device.bat`、`sign-hap.ps1` 都调它，**不要再往脚本里写死路径**。
+
+### 0.2 什么时候必须检查（硬规则）
+
+**只在任务需要仓库外的本机路径时检查** —— 构建、装包、`hdc`、对照上游 `ReadAny`。
+读代码、改文档、算行号、纯结构扫描：**不要**检查，否则每轮都先问一遍很烦。
+
+### 0.3 取不到值时怎么办（硬规则）
+
+| 情况 | 行为 |
+| --- | --- |
+| `AGENTS.local.md` 不存在，且探测也失败 | **停下来问用户**。不许猜、不许翻 git 历史、不许拿别处的默认值硬跑。 |
+| 文件存在但**缺某个字段** | 只问缺的那一个，不要连带重问其他。 |
+| 文件里的值**已失效**（目录不存在） | 报告「`AGENTS.local.md` 里的 `DEVECO_HOME` 已不存在」并问新值；**不要静默改用别的路径**（静默换 SDK 会把错误推到半小时后的诡异编译错误里）。 |
+| 模板 `AGENTS.local.md.example` | **不是配置**，其中的 `<...>` 是占位符，不要当值用。 |
+
+### 0.4 防泄漏自检
+
+- 提交前：`git check-ignore AGENTS.local.md` **必须有输出**。
+- `AGENTS.local.md` 里**只放路径**。密码、令牌、私钥、内网地址一律不进任何被跟踪的文件（沿用文首的「打码约定」）。
+- 需要真实凭据时**问用户**。
+
+### 0.5 新机器上第一次用
+
+```powershell
+Copy-Item AGENTS.local.md.example AGENTS.local.md   # 填 DEVECO_HOME，其余可留空
+& .\scripts\env.ps1 -Print                          # 确认解析结果
+```
+
+---
 ## 1. 这个项目是什么
 
 把 **ReadAny**（一个桌面端电子书阅读器）的四个核心功能**原生移植**到 HarmonyOS：
 
 **WebDAV 同步 · 阅读 · 书签 · 笔记**
 
-- 工作目录：`D:\Code\ReadAny-ohos`
+- 仓库根（工作目录）：**由 `git rev-parse --show-toplevel` 得到，不写死** —— 本机值见 `AGENTS.local.md` 的 `WORKSPACE`，解析后是 `$env:READANY_REPO_ROOT`
 - 鸿蒙工程：**与工作目录同一个目录** —— 仓库根就是工程根（`build-profile.json5`、`build.bat`、`entry/`、`core/`、`data/`、`sync/` 直接在最外层）。**旧的 `harmony/` 子目录布局已不存在**
-- 参照实现：**`D:\Code\ReadAny`**（[codedogQBY/ReadAny](https://github.com/codedogQBY/ReadAny)），**只读，绝不修改**。**已固定在 `v1.3.6`**（分支 `pinned-v1.3.6`，commit `8d3f74a1`），v1.3.6 之后的提交与分支引用**已从本地清除** —— 见 §12.8
+- 参照实现：**`$env:READANY_REF`**（本机检出目录，值在 `AGENTS.local.md` 的 `REF_IMPL`；上游仓库 [codedogQBY/ReadAny](https://github.com/codedogQBY/ReadAny)），**只读，绝不修改**。**已固定在 `v1.3.6`**（分支 `pinned-v1.3.6`，commit `8d3f74a1`），v1.3.6 之后的提交与分支引用**已从本地清除** —— 见 §12.8
 - 调研产出 `docs/`、诊断/证据/探针脚本 `.diag/`、审计套件 `tools/`：**都不在本仓库**。文中这些路径是**历史记录**；`tools/` 缺失意味着 §3.2 的 30 工具审计在本工作区跑不了
-- **代码托管**：**仓库根自己就是 git 仓库**（`D:\Code\ReadAny-ohos\.git`，就地 `git init`），`origin` = `https://github.com/hkb65536/ReadAny-ohos.git`，分支 `main` —— 详见 **§12**
+- **代码托管**：**仓库根自己就是 git 仓库**（`<仓库根>\.git`，就地 `git init`），`origin` = `https://github.com/hkb65536/ReadAny-ohos.git`，分支 `main` —— 详见 **§12**
 
 > **⚠️ 路径口径（2026-10-26 统一）**
 >
-> 本文档 r95–r122 的轮次记录写于**旧工作区**（原 `D:\Code\InkBoat`）+ `harmony/` 子目录布局，所以历史段落里仍会出现 `harmony/entry/…` 这类写法。**在本仓库里一律这样读**：`harmony/<x>` → `<x>`（仓库根下的同路径，例见下一行），工作区一律是 `D:\Code\ReadAny-ohos`。
+> 本文档 r95–r122 的轮次记录写于**旧工作区**（原 `D:\Code\InkBoat`）+ `harmony/` 子目录布局，所以历史段落里仍会出现 `harmony/entry/…` 这类写法。**在本仓库里一律这样读**：`harmony/<x>` → `<x>`（仓库根下的同路径，例见下一行），工作区一律指**仓库根**（解析后是 `$env:READANY_REPO_ROOT`）。
 >
 > 例：`harmony/entry/src/main/ets/pages/ShelfPage.ets` = `entry/src/main/ets/pages/ShelfPage.ets`；`harmony/entry/build/…/entry-default-unsigned.hap` = `entry/build/…/entry-default-unsigned.hap`（后者才是本仓库的真实产物路径）。
 >
@@ -30,7 +77,7 @@
 
 > **⚠️ 参照实现的版本口径（2026-10-26，r124）**
 >
-> `D:\Code\ReadAny` **不是 main**，是 **`v1.3.6`** 的标签提交。两个直接后果：
+> `$env:READANY_REF`（本机检出目录）**不是 main**，是 **`v1.3.6`** 的标签提交。两个直接后果：
 > 1. **v2 协议在 v1.3.6 里不存在** —— `packages/core/src/sync/per-book-sync.ts`（1085 行）是 **main 独有**，main 比 v1.3.6 领先 **77 个提交**。所以「已发布的桌面端只讲 v1」这条前提现在有本地证据，不再是从别处推断的。
 > 2. **本文档里 `simple-sync.ts:396-418` 这类行号是 main 的行号**。在 v1.3.6 检出里，`if (!options.forceApply && deletedAt > 0)` 在 **:381**、`if (deletedAt > 0)` 在 **:393** —— 语义一致（`deletedAt <= 0` 时整段 `if` 被跳过，那条 DELETE 无条件执行）。
 
@@ -53,13 +100,13 @@
 
 | # | 约束 | 为什么 |
 |---|---|---|
-| 1 | **绝不修改另行检出的上游 `ReadAny/` 下任何文件** | 它是参照物。若本机检出过，每轮结束可用 `git -C <ReadAny 路径> status --porcelain` 应为空 + 无今日 mtime 来自证。**现在已检出在 `D:\Code\ReadAny`，固定 `v1.3.6`，只读** |
+| 1 | **绝不修改另行检出的上游 `ReadAny/` 下任何文件** | 它是参照物。若本机检出过，每轮结束可用 `git -C <ReadAny 路径> status --porcelain` 应为空 + 无今日 mtime 来自证。**本机检出在 `$env:READANY_REF`，固定 `v1.3.6`，只读** |
 | 2 | **不动 `data/src/main/ets/Rdb.ets` 的 `queueBusy` 重入守卫**（声明 ~:117，置位 :131，清除 :135，早返回 :138） | 它修掉了一个**已验证的死锁**：`runWithRetry` 把写入串行化，而 `updateReadingPosition` 在事务里调 `getDeviceId()`，后者在冷缓存时排到自己后面 → **所有写入（设置、`last_sync_at`、阅读位置）全部静默卡死**。表现为 `start` 打 3 次而 `done`/`failed` 0 次、WAL 冻结在 0 字节 |
 | 3 | **三个破坏性同步操作只存在于注释**：`cleanupRemoteOrphans`、`cleanupLocalOrphans`、`migrateBookRemoteState` | 由 `tools/verify-sync-routing.mjs` 断言（它从 `WebDavClient.ets` 反推传输层的删除/移动方法名）。**远端从不发出删除**；`deletePath` 零调用者 |
 | 4 | **绝不设 `forceApply`** | `SyncRouter.ets:196` = false，`SyncV1.ets:383` = false |
 | 5 | **不削弱墓碑上界**（`SyncConstants.ets` 的 `MAX_FUTURE_TOMBSTONE_SKEW_MS`） | `tools/verify-tombstone-bound.mjs` 守着 |
 | 6 | **不改同步线格式** | 要和桌面端互通 |
-| 7 | **备份一律放仓库根目录**（`D:\Code\ReadAny-ohos\.backup-*`），**绝不放模块目录里** | 审计工具扫各模块 `src/` 下的源码，**放在里面的备份会被当成活代码**，已经因此造成过一次审计失败 |
+| 7 | **备份一律放仓库根目录**（`<仓库根>\.backup-*`），**绝不放模块目录里** | 审计工具扫各模块 `src/` 下的源码，**放在里面的备份会被当成活代码**，已经因此造成过一次审计失败 |
 | 8 | **绝不用进程名杀进程**（`Get-Process node \| Stop-Process` 曾杀掉开发宿主） | |
 | 9 | **绝不写 `while (t.includes(a)) { t = t.replace(a,b) }`**（当 `b` 含 `a` 时死循环，曾挂住工具链） | 用 `t.split(a).join(b)` |
 | 10 | **做全局替换前确认「替换文本里不含搜索文本」** | 曾有一次性把 `goToSettingsPage` 的函数体改成调用它自己，造成无限递归崩溃 |
@@ -84,12 +131,17 @@
 ### 3.1 构建
 
 ```powershell
-cd D:\Code\ReadAny-ohos
-$env:DEVECO_SDK_HOME="D:\DevEco Studio\sdk"
-& "D:\DevEco Studio\tools\hvigor\bin\hvigorw.bat" assembleHap --mode module -p product=default --no-daemon
+# 推荐：仓库自带的 build.bat 会自己解析 DEVECO_HOME（规则在 scripts\env.ps1）
+.\build.bat assembleHap --mode module -p product=default
+
+# 等价的直接调用（先解析路径；-Print 会打印解析结果）
+& .\scripts\env.ps1
+& "$env:DEVECO_HOME\tools\hvigor\bin\hvigorw.bat" assembleHap --mode module -p product=default --no-daemon
 ```
 
-- DevEco Studio 26.0 在 `D:\DevEco Studio`，SDK 在 `D:\DevEco Studio\sdk`
+- DevEco Studio 26.0 装在 `$env:DEVECO_HOME`（本机值见 `AGENTS.local.md`），SDK 在 `$env:DEVECO_HOME\sdk`
+- **打包阶段要 `java`，而 DevEco 的 JBR 不在 PATH 上**：缺了会在 `PackageHap` 报 `Error Code: 00308018 / spawn java ENOENT`——**编译已经成功之后**才失败，看起来像代码问题，其实只是没有 JDK。`build.bat` 现在自动设 `JAVA_HOME=%DEVECO_HOME%\jbr` 并把 `jbr\bin` 前置进 PATH；手工调 `hvigorw` 之前先跑一次 `& .\scripts\env.ps1`（它也导出了 `JAVA_HOME`）。
+- **首次构建要先装依赖**：`build.bat --install assembleHap ...`（`--install` 会跑 `ohpm install --all`，拉 `@ohos/hypium` 并顺带装 pnpm）。`oh_modules/` 不在仓库里，全新克隆必须先走这一步。
 - **`hvigorw` 从不打印 `COMPILE RESULT:`**——那个字符串来自某个包装脚本，别去找它
 - **`clean` 和 `incremental` 构建不是逐字节相同的**：产物只在 `ets/modules.abc` 和 `ets/sourceMaps.map` 上不同（约 ±13 字节）。**所以 hash 标识的是磁盘上那个文件，不是可复现构建**
 - 模块：`entry`(HAP) + `core` + `data` + `sync`(HAR)，**单向依赖 `core ← sync ← data ← entry`**；**`sync` 绝不能 import `data`**
@@ -97,11 +149,11 @@ $env:DEVECO_SDK_HOME="D:\DevEco Studio\sdk"
 ### 3.2 审计套件
 
 ```powershell
-cd D:\Code\ReadAny-ohos
+Set-Location (git rev-parse --show-toplevel)
 Get-ChildItem tools -File | Where-Object { $_.Name -notlike '_*' } | Sort-Object Name | ForEach-Object { & node $_.FullName 2>&1 | Select-String 'passed' }
 ```
 
-**前提：`tools/` 在本工作区不存在**（审计套件没有随仓库发布，`Get-ChildItem tools` 会报路径不存在）。若另行恢复了它，再从仓库根 `D:\Code\ReadAny-ohos` 跑上面那段。
+**前提：`tools/` 在本工作区不存在**（审计套件没有随仓库发布，`Get-ChildItem tools` 会报路径不存在）。若另行恢复了它，再从仓库根跑上面那段。
 
 **必须逐工具相加并手工核对。** 反复出错的点：
 
@@ -137,7 +189,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 - 设备：**`CMM-AL10P`**（Mate 90 Pro Max），HarmonyOS `7.0.0.109(SP9C00E108R6P4)`，**API 26**
 - 屏幕 **1320×2848 px，密度 3.375 px/vp**（densityDPI 540），**宽 391.1 vp**
 - bundle：`com.readany.reader`
-- `hdc.exe`：`D:\DevEco Studio\sdk\default\openharmony\toolchains\hdc.exe`（**不在 PATH 里，要用全路径**）
+- `hdc.exe`：`$env:DEVECO_HOME\sdk\default\openharmony\toolchains\hdc.exe`（**不在 PATH 里，要用全路径**；`DEVECO_HOME` 由 `scripts\env.ps1` 解析，`device.bat` 已经这么调了）
 - **TCP 端口每次会话会变**：先 `hdc list targets -v`，取 `Connected` 那一行
 - **设备会在会话中途断开**（`list targets` 变 `[Empty]`）。**任何依赖设备的脚本都要先检查 `Connected` 再动手**——曾经因为没检查，一个采样脚本拿到的图片对象是空的，刷了满屏 `You cannot call a method on a null-valued expression`，而真正的原因只是设备不在。**重新连上后地址可能和之前相同，但不要假设。**
 - **包无签名，agent 装不了**。`build-profile.json5` 是 `"signingConfigs": []`，hvigor 会打 `Will skip sign 'hos_hap'`。**用户用 DevEco 自动签名安装。每一轮都需要用户装一次，这是既定流程。**
@@ -281,6 +333,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 | 半模态顶部的横条 + 背景不统一 | ① `.bindSheet` 没设 `backgroundColor`，`BindOptions.backgroundColor` **默认 `Color.White`**；② **`dragBar` 默认 true**，平台拖拽胶囊画在容器背景上、位于内容之上的一条带里 | `backgroundColor: this.sheetCard()` + `dragBar: false` + `showClose: false` |
 | `SheetSize.MEDIUM` 不是「一半」 | **它是 60%**（参考文档 + `mediumPercent_ = 0.6` 两处独立来源）。`common.d.ts` 里那句 "half the screen height" 是 API 10 时代的陈旧注释 | 要字面一半用 `height: '50%'`（基准是 `窗口高 − sheet 顶部安全区`） |
 | `detents` 和 `dragBar: false` 冲突？ | **不冲突**——拖拽条会被显式隐藏。**真正的理由**：设了 `detents` 后 `height` 被忽略、面板可跟手拖离该高度 | 要固定高度就不要 `detents` |
+| 构建跑到 `PackageHap` 报 `spawn java ENOENT`（`00308018`） | DevEco 自带 JBR 但**没进 PATH**、`JAVA_HOME` 为空；打包步骤靠 `java` | `build.bat` 已自动设 `JAVA_HOME=%DEVECO_HOME%\jbr`；手工调 hvigorw 前先 `& .\scripts\env.ps1` |
 
 ---
 
@@ -359,6 +412,38 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 ---
 
 ## 9. 进行中的工作
+
+### r125：把机器路径从仓库里抽出去（跨机开发）+ 首次在本机构建成功
+
+**用户要求**：「AGENTS.md 里写的是公司电脑的路径，我有在不同电脑开发的需求」→ 结论是**一个模板入库 + 每台机器一份不入库的本机文件**；「如果本地没有对应的文件，就问我」；「脚本也一起改」。
+
+**新增/改动的文件**：
+
+| 文件 | 入库 | 作用 |
+| --- | --- | --- |
+| `AGENTS.local.md.example` | ✅ | 模板，**只有 `<...>` 占位符**，不含任何真实路径 |
+| `AGENTS.local.md` | ❌（`.gitignore`） | 本机真值 |
+| `scripts/env.ps1` | ✅ | **唯一的解析逻辑**：环境变量 → 本机文件 → 候选探测 → 失败报错 |
+| `build.bat` / `device.bat` / `sign-hap.ps1` | ✅ | 不再写死 `DEVECO_HOME`，改为调 `env.ps1 -Get` 或接受参数 |
+| `AGENTS.md` §0 | ✅ | 取值优先级、何时才该检查、取不到时**必须问用户**、防泄漏自检 |
+
+**路径处置**：§1/§2/§3.1/§3.2/§3.4/§12.1/§12.3/§12.8 里的 `D:\Code\ReadAny-ohos`、`D:\Code\ReadAny`、`D:\DevEco Studio` 全部换成 `$env:READANY_REPO_ROOT` / `$env:READANY_REF` / `$env:DEVECO_HOME` / `<仓库根>`。**§9 的历史轮次保留原文**（r123/r124 里的路径是当时那台机器的记录）。
+
+#### 构建验证（本轮真正的收获）
+
+**第一次在本机构建就成功**：`build.bat --install assembleHap --mode module -p product=default` → **BUILD SUCCESSFUL**，产物 `entry/build/default/outputs/default/entry-default-unsigned.hap`，**1,948,303 字节**，sha256 `d28a1f2df1fceec15aa09d86157a062f177dfb26f5154efdb448cf12616abad0`，未签名（`Will skip sign` + `hos_hap`）。
+
+- **字节数与 r122 完全相同（1,948,303）而 hash 不同**：符合 §3.1 那条「`clean` 与增量只在 `ets/modules.abc` / `ets/sourceMaps.map` 上不同」，也说明本轮**没有改动任何源码**。
+- `CompileArkTS` 通过，仅剩既有 warning（`arkts-no-classes-as-obj`、`systemMaterial`/`uiMaterial` 的 API-26 提示、`Rdb.ets` 的 throw 未处理、`AlertDialog.show` 已废弃等），**没有新增 warning 类别**。
+
+#### 两个以后会再踩的坑（已写进 §3.1 与 §7）
+
+1. **`spawn java ENOENT`（`Error Code: 00308018`）**：第一次构建**编译全过**，却在 `PackageHap` 挂掉。根因不是代码，是打包步骤要 `java` 而 DevEco 的 JBR **不在 PATH**、`JAVA_HOME` 为空。`build.bat` 现在自动设 `JAVA_HOME=%DEVECO_HOME%\jbr`；`env.ps1` 也导出它并打印。
+2. **构建会把 `core|data|sync/BuildProfile.ets` 的行尾写成 LF**，而 index 里是 CRLF → 每次构建都出现**三个「假改动」**，`git diff` 却是空的。`git add --renormalize` 一次性修好；**修完再构建一次验证过，工作区保持干净**。
+
+#### 未验
+
+**公司那台机器没有验证过**：模板与候选列表已备好（`D:\Dev\DevEco Studio`、`D:\DevEco Studio`、`C:\Program Files\Huawei\DevEco Studio`），但公司机若装在其他位置，需要在那边建 `AGENTS.local.md` 或把路径加进 `scripts/env.ps1` 的候选列表。**没有真的在公司机上跑过。**
 
 ### r124：把上游参照实现固定到 `v1.3.6`（外部检出；本仓库只有 `AGENTS.md` 改动）
 
@@ -1119,7 +1204,7 @@ Column
 |---|---|
 | 已配置的 `origin` | `https://github.com/hkb65536/ReadAny-ohos.git`（HTTPS；**2026-10-26 实测**） |`r`n| 可推送的远端 | `git@github.com:hkb65536/ReadAny-ohos.git`（SSH，见 §12.3） |
 | 分支 | `main`（新仓库的默认分支，也是唯一分支） |
-| 仓库本体 | **仓库根自己就是 git 仓库**（`D:\Code\ReadAny-ohos\.git`，就地 `git init`）；工作区根与工程根是**同一个目录** |
+| 仓库本体 | **仓库根自己就是 git 仓库**（`<仓库根>\.git`，就地 `git init`）；工作区根与工程根是**同一个目录** |
 | 首个提交 | `7bd8aee` `feat(harmony): 导入 InkBoat 鸿蒙移植工程` —— **根提交（无父）**，121 文件 |
 | 第二个提交 | `0e52334` `docs: 补齐 GPL-3.0 协议文本与来源声明` —— +3 文件 → **124** |
 | 第三个提交 | `1561010` `feat(reader): 浮动两栏 + 三分区点击覆盖层（r100）` —— 4 文件（+695/−495）。**只在本机，尚未推送** |
@@ -1130,12 +1215,12 @@ Column
 - **每次修改代码后立刻在本地提交，不要攒着**：
 
   ```powershell
-  git -C D:\Code\ReadAny-ohos add -A
-  git -C D:\Code\ReadAny-ohos commit -m "<type>(<scope>): <说明>"
+  git add -A
+  git commit -m "<type>(<scope>): <说明>"
   ```
 
 - **不要每次都推远端。** `git push` **只在用户明确要求时才执行**——他会自己说要推。**默认状态就是「本地领先 `origin/main` 若干提交」，这是期望状态，不是未完成的工作**，不要自作主张去对齐。
-- **一轮结束时 `git -C D:\Code\ReadAny-ohos status --porcelain` 必须为空**（不留未提交的代码改动）。
+- **一轮结束时 `git status --porcelain` 必须为空**（不留未提交的代码改动）。
 - 这条纪律的由来：**r100 那轮（浮动两栏 + 三分区覆盖层）改了代码却一直没提交**，直到建立这条规则时才补上（§9 r100）。**改了不提交 = 没有版本历史兜底。**
 - 提交身份不用管（仓库级已是 `hkb65536 <github-email>`，§12.2）；真要推时目标是 `origin/main`、走 SSH（§12.3）。
 
@@ -1152,7 +1237,7 @@ Column
 
 - **`AyaseEil` 已更名为 `hkb65536`，是同一个人**（user id 都是 `<github-user-id>`）。SSH key 没换：`ssh -T git@github.com` 现在回 `Hi hkb65536!`（以前回 `Hi AyaseEil!`）。**不要把这两个名字当成两个账号，也不要去申请新凭据。**
 - **推送必须走 SSH。** 本机 pwsh 里的 HTTPS/**schannel 是坏的**——连 `https://www.baidu.com` 都报 `SEC_E_NO_CREDENTIALS (0x8009030e)`，`github.com:443` 直连被 reset，`gh-proxy.org` 只能拉不能推。但 **Node 的 `fetch`（自带 OpenSSL）是好的**——这轮所有 GitHub API 复核都走它（`node -e "fetch(...)"`），`api.github.com`、`www.gnu.org` 都能取。**要查 GitHub 就用 Node，不要用 `Invoke-RestMethod`。**
-- **拉取（fetch/pull）实测可用的通道是本机 SOCKS 代理**（2026-10-26）：`git -c http.proxy=socks5h://127.0.0.1:10808 fetch origin` —— v2rayN 的 xray 在 `127.0.0.1:10808` 提供 SOCKS5。**直连 HTTPS 会 `Recv failure: Connection was reset`**。这是**一次性参数，不要写进全局配置**：代理一关，所有 git 操作都会失败。
+- **拉取（fetch/pull）实测可用的通道是本机 SOCKS 代理**（2026-10-26）：`git -c http.proxy=$env:READANY_PROXY fetch origin` —— 本机代理地址在 `AGENTS.local.md` 的 `PROXY`（家用机是 v2rayN 的 `socks5h://127.0.0.1:10808`）。**直连 HTTPS 会 `Recv failure: Connection was reset`**。这是**一次性参数，不要写进全局配置**：代理一关，所有 git 操作都会失败。
 - 收紧沙箱时 `git push` 曾因 git 用 `sh` 拉起 ssh 而报 `sh.exe: *** fatal error - couldn't create signal pipe, Win32 error 5`（当时靠 `GIT_SSH=C:\WINDOWS\System32\OpenSSH\ssh.exe` 绕开）。**当前政策（danger-full-access）下普通 `git push` 直接可用**，不需要任何绕行参数。
 - 同理，`git credential fill` 那条路是死的（凭据助手是 shell 包装脚本，沙箱里起不来）。
 
@@ -1209,11 +1294,11 @@ build.bat --install assembleHap ...   →   hvigorw --install assembleHap ... --
 
 **用户尚未决定是否修 `build.bat`。**
 
-### 12.8 上游参照实现的本地检出（`D:\Code\ReadAny`，固定 `v1.3.6`）
+### 12.8 上游参照实现的本地检出（`$env:READANY_REF`，固定 `v1.3.6`）
 
 | 项 | 值 |
 |---|---|
-| 路径 | `D:\Code\ReadAny` |
+| 路径 | `$env:READANY_REF`（值在 `AGENTS.local.md` 的 `REF_IMPL`） |
 | 远端 | `https://github.com/codedogQBY/ReadAny.git`（clone 时经本机 SOCKS 代理，直连会被 reset） |
 | HEAD | `8d3f74a1` `fix(ci): give Android R8 more heap`（2026-08-16）＝ **tag `v1.3.6`** |
 | 分支 | 只有 `pinned-v1.3.6`（`main` 与 **98 个** `refs/remotes/origin/*` **已删除**） |
@@ -1228,8 +1313,8 @@ build.bat --install assembleHap ...   →   hvigorw --install assembleHap ... --
 **恢复全部历史**（需要时，经代理）：
 
 ```powershell
-git -C D:\Code\ReadAny config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
-git -C D:\Code\ReadAny -c http.proxy=socks5h://127.0.0.1:10808 fetch origin
+git -C $env:READANY_REF config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+git -C $env:READANY_REF -c http.proxy=$env:READANY_PROXY fetch origin
 ```
 
 ---

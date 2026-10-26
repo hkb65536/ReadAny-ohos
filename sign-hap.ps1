@@ -44,7 +44,7 @@ param(
 
   [string] $BundleName = 'com.inkboat.reader',
 
-  [string] $DevEcoHome = 'D:\DevEco Studio',
+  [string] $DevEcoHome = '',
 
   [string] $UnsignedHap = '',
 
@@ -52,6 +52,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Resolve the DevEco Studio install directory without hard-coding a machine path:
+# parameter -> DEVECO_HOME -> AGENTS.local.md -> candidate probe (scripts\env.ps1).
+if ([string]::IsNullOrWhiteSpace($DevEcoHome)) {
+  $DevEcoHome = (& (Join-Path $PSScriptRoot 'scripts\env.ps1') -Get DEVECO_HOME)
+  if ([string]::IsNullOrWhiteSpace($DevEcoHome)) {
+    throw 'DevEco Studio not found. Set DEVECO_HOME or fill DEVECO_HOME in AGENTS.local.md.'
+  }
+}
 
 $sdkLib  = Join-Path $DevEcoHome 'sdk\default\openharmony\toolchains\lib'
 $java    = Join-Path $DevEcoHome 'jbr\bin\java.exe'

@@ -1,7 +1,11 @@
 @echo off
 setlocal
 
-if "%DEVECO_HOME%"=="" set "DEVECO_HOME=D:\DevEco Studio"
+rem Resolve DEVECO_HOME without hard-coding any machine path:
+rem environment variable -> AGENTS.local.md -> candidate probe (AGENTS.md section 0).
+if "%DEVECO_HOME%"=="" (
+  for /f "usebackq delims=" %%I in (`powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\env.ps1" -Get DEVECO_HOME`) do set "DEVECO_HOME=%%I"
+)
 set "HDC=%DEVECO_HOME%\sdk\default\openharmony\toolchains\hdc.exe"
 
 if not exist "%HDC%" (

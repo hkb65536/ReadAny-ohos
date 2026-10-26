@@ -1,0 +1,49 @@
+# AGENTS.local.md — 本机环境模板
+
+> **这是模板，不是配置。** 复制成 `AGENTS.local.md` 再把 `<...>` 换成真实值。
+> `AGENTS.local.md` 已被 `.gitignore` 忽略，**绝不入库**。
+>
+> 为什么要有这个文件：本仓库要在不止一台电脑上开发，而 DevEco 的安装位置、
+> 上游 ReadAny 的检出位置、代理端口都是**每台机器不同**的。这些值只放在这个
+> 文件里，仓库里不写死任何一台机器的路径。
+>
+> **只放路径，不要放密码 / 令牌 / 私钥 / 内网地址** —— 这个仓库是公开的。
+> 需要真实凭据时去问用户，不要写进任何被 git 跟踪的文件。
+
+## 填法
+
+在本文件所在的目录（仓库根）执行：
+
+```powershell
+Copy-Item AGENTS.local.md.example AGENTS.local.md
+# 然后编辑 AGENTS.local.md，把下面每个 <...> 换成这台机器的真实值
+```
+
+## 字段
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `WORKSPACE` | 否 | 仓库根。留空即可 —— 脚本用 `git rev-parse --show-toplevel` 算 |
+| `DEVECO_HOME` | **是**（除非能自动探测到） | DevEco Studio 安装目录，构建 / hdc / 装包都靠它 |
+| `REF_IMPL` | 否 | 上游 ReadAny 的本地检出目录；只在对照协议行为时用 |
+| `PROXY` | 否 | 访问 GitHub 用的本地代理；留空 = 直连 |
+| `NOTE` | 否 | 这台机器的备注，不参与任何逻辑 |
+
+值写错（指向不存在的目录）等同于没写：脚本会继续按候选列表探测，探测不到就报错。
+
+## 内容模板
+
+```
+WORKSPACE   = <仓库根；可留空>
+DEVECO_HOME = <DevEco Studio 安装目录>
+REF_IMPL    = <可选：上游 ReadAny 检出目录>
+PROXY       = <可选：本地代理，如 socks5h://127.0.0.1:10808>
+NOTE        = <可选：这台机器的备注>
+```
+
+## 验证
+
+```powershell
+.\scripts\env.ps1 -Print          # 应打印出这台机器解析到的全部值
+git check-ignore AGENTS.local.md   # 必须有输出（说明确实被忽略）
+```
