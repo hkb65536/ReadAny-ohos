@@ -306,7 +306,7 @@ const TAB_SWITCH_DURATION_MS: number = 300;
  * kept alive here, not even in prose**: the suite asserts their absence as bare tokens, which is
  * what makes "the feature is gone" checkable rather than merely claimed.
  */
-export const BUILD_STAMP: string = 'build 2026-10-16 r120 (shelf-title-return-and-tempo)';
+export const BUILD_STAMP: string = 'build 2026-10-26 r122 (pull-writes-through-position)';
 
 /**
  * A byte count as something a person can read.
@@ -579,6 +579,16 @@ struct Index {
    */
   private hdsController: HdsTabsController = new HdsTabsController();
   @State private config: WebDavConfig = defaultWebDavConfig();
+  /**
+   * True when a WebDAV password is in the credential store.
+   *
+   * The sync form needs it for two decisions it cannot make on its own: whether its password
+   * placeholder says 「已保存 · 留空则不修改」, and whether there is a stored credential for
+   * the explicit 清除 control to remove. Read from the credential store rather than from
+   * `isConfigured()`, which also requires a URL and a username — a form whose address was
+   * just cleared still has a password saved, and must still offer to delete it.
+   */
+  @State private hasStoredPassword: boolean = false;
   /**
    * The status line under the 同步 button.
    *
@@ -1397,6 +1407,7 @@ struct Index {
   private async bootstrap(): Promise<void> {
     if (isAppCoreReady()) {
       this.applyConfig();
+      await this.refreshCredentialState();
       await this.reloadShelf();
       await this.reloadAnnotations();
       this.groupTotal = await groupCount();
@@ -1417,6 +1428,7 @@ struct Index {
       this.ready = true;
       this.initMessage = '';
       this.applyConfig();
+      await this.refreshCredentialState();
       await this.reloadShelf();
       await this.reloadAnnotations();
       this.groupTotal = await groupCount();
@@ -1792,6 +1804,25 @@ struct Index {
   }
 
   /**
+   * Re-read whether a WebDAV password is stored.
+   *
+   * Separate from `applyConfig`, which is synchronous and cannot await the credential store.
+   * Called on bootstrap (both cold and already-initialised), after a save and after an
+   * explicit clear — the three moments the answer can change.
+   *
+   * `verifyCredentialPresent` is written not to throw, so the guard here only keeps a future
+   * change to it from leaving the form claiming a password it cannot see.
+   */
+  private async refreshCredentialState(): Promise<void> {
+    try {
+      this.hasStoredPassword = await sync().verifyCredentialPresent();
+    } catch (err) {
+      this.hasStoredPassword = false;
+      hilog.warn(DOMAIN, TAG, 'credential presence check failed: %{public}s', String(err));
+    }
+  }
+
+  /**
    * Show a transient confirmation.
    *
    * Routed through the shared helper so the deprecated module-level
@@ -1821,6 +1852,24 @@ struct Index {
   ): Promise<void> {
     await sync().saveConnection(url, username, password, allowInsecure, remoteRoot);
     this.applyConfig();
+    // An empty password is kept rather than cleared, so whether a credential now exists is
+    // not a function of the argument — the form's placeholder and 清除 control must re-read
+    // the store instead of assuming.
+    await this.refreshCredentialState();
+  }
+
+  /**
+   * Forget the stored WebDAV password.
+   *
+   * The only way to remove it: `saveConnection` keeps the stored credential when the field
+   * is empty, so "clear the field and save" no longer has a destructive meaning and the
+   * removal needs an explicit path. `applyConfig` follows because `configured` changes with
+   * it, and that is what the sync card reports.
+   */
+  private async clearStoredPassword(): Promise<void> {
+    await sync().clearWebDavPassword();
+    this.applyConfig();
+    await this.refreshCredentialState();
   }
 
   /**
@@ -3107,6 +3156,9 @@ struct Index {
         SyncSettingsPage({
           config: this.config,
           palette: paletteFor(this.themeMode),
+          // What the form needs to tell "there is a saved password, leave the field empty to
+          // keep it" from "there is none, type one".
+          hasStoredPassword: this.hasStoredPassword,
           onTest: (url: string, username: string, password: string, allowInsecure: boolean, remoteRoot: string): Promise<void> =>
             this.testConnection(url, username, password, allowInsecure, remoteRoot),
           onSave: (url: string, username: string, password: string, allowInsecure: boolean, remoteRoot: string): Promise<void> =>
@@ -3116,6 +3168,8 @@ struct Index {
           // `saveAutoSync`.
           onAutoSyncChange: (enabled: boolean): Promise<void> =>
             this.saveAutoSync(enabled),
+          // And the only destructive one, because an empty password now means "keep".
+          onClearPassword: (): Promise<void> => this.clearStoredPassword(),
         })
 
         this.planProbeSection()

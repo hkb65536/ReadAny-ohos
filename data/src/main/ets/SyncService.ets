@@ -52,6 +52,7 @@ import { Highlights } from './Highlights';
 
 import { isSyncAllowedNow } from './NetworkStatus';
 import { Notes } from './Notes';
+import { PositionWriteThroughWriter } from './PositionWriteThrough';
 import { SyncConfigStore } from './SyncConfigStore';
 import type { BookTransferCounts, SyncEngine, SyncProgress, SyncProgressFn } from './SyncEngine';
 import {
@@ -72,7 +73,7 @@ import {
   v1OptionsForMode,
 } from './SyncRouter';
 import type { V1IndexLoad, V1Progress, V1SyncResult } from './SyncV1';
-import { SyncV1Engine } from './SyncV1';
+import { RdbRecordWriter, SyncV1Engine } from './SyncV1';
 import { V1FilePhase } from './V1FilePhase';
 
 /** hilog domain and tag for this module. */
@@ -456,8 +457,18 @@ export class SyncService {
    * Persist connection details.
    *
    * The password is written to the credential store and the rest to preferences.
-   * An empty password clears the stored credential rather than leaving the old
-   * one in place, so "clear the field and save" does what the user expects.
+   *
+   * **An empty password means "keep the stored one".** This replaced the previous contract
+   * ("empty clears"), which was wrong for the dominant flow: a user who edits 远程目录, or
+   * the address, or the username, leaves the password field empty — because the real secret
+   * is never put into a form field — and every such save then deleted the stored
+   * credential. `configured` went false, the next pass could not authenticate, and the
+   * user had to retype the password after every unrelated edit.
+   *
+   * A non-empty password still overwrites. **Clearing is an explicit action**:
+   * `clearWebDavPassword()` below, and `clearConfiguration()` for the whole connection.
+   * Every caller that means "forget the password" therefore calls something that says so,
+   * rather than passing an empty string and hoping.
    */
   async saveConnection(
     url: string,
@@ -468,11 +479,37 @@ export class SyncService {
   ): Promise<void> {
     const next: WebDavConfig = this.withConnectionDetails(url, username, allowInsecure, remoteRoot);
     await this.configStore.save(next);
-    await this.credentials.setWebDavPassword(password);
+    // Only a typed password reaches the store. The store's own setter treats an empty value
+    // as "delete", which is a sane primitive; the decision about *whether* this save means
+    // "delete" belongs here, and it does not.
+    if (password.length > 0) {
+      await this.credentials.setWebDavPassword(password);
+    }
 
     this.config = next;
     this.dropEngines(); // rebuilt lazily against the new settings
     this.configured = next.url.length > 0 && next.username.length > 0
+      && await this.credentials.hasWebDavPassword();
+    this.lastError = '';
+    this.status = SyncRunStatus.IDLE;
+    this.emit();
+  }
+
+  /**
+   * Forget the stored WebDAV password, leaving the address and preferences in place.
+   *
+   * The explicit counterpart of "an empty password keeps the old one": this is the only way
+   * a save can remove the credential, so it is also the only place that has to be sure the
+   * user meant it.
+   *
+   * The engines are dropped for the same reason a configuration change drops them — the
+   * shared client was built from the password that no longer exists, and keeping it would
+   * let a pass authenticate with a credential the user just removed.
+   */
+  async clearWebDavPassword(): Promise<void> {
+    await this.credentials.clearWebDavPassword();
+    this.dropEngines();
+    this.configured = this.config.url.length > 0 && this.config.username.length > 0
       && await this.credentials.hasWebDavPassword();
     this.lastError = '';
     this.status = SyncRunStatus.IDLE;
@@ -666,6 +703,13 @@ export class SyncService {
    * one method, no delete, no move, no listing. Keeping the concrete phase out of the
    * engine's type is what makes "the v1 metadata engine cannot delete anything remote" a
    * property of the interface rather than a promise about its implementation.
+   *
+   * The fourth argument is the record writer, and it is wrapped rather than left to the
+   * engine's default. `PositionWriteThroughWriter` adds exactly one thing to the writer the
+   * engine already uses: when a `books` row wins the merge, the reader's local position
+   * cache is reconciled with the position that row carries. The seam is here, not inside
+   * `SyncV1`, because the engine is table-generic and "this row won" is the only fact it
+   * has to publish — see that class for the rule and for why no timestamp is involved.
    */
   private async ensureV1Engine(): Promise<SyncV1Engine> {
     if (this.v1Engine !== undefined) {
@@ -674,8 +718,10 @@ export class SyncService {
     const client: WebDavClient = await this.ensureClient();
     const books: Books = new Books(this.db);
     const files: V1FilePhase = new V1FilePhase(client, this.config, books, this.storage);
+    const writer: PositionWriteThroughWriter =
+      new PositionWriteThroughWriter(new RdbRecordWriter(this.db), this.db);
     const engine: SyncV1Engine = new SyncV1Engine(
-      client, this.config, this.db, undefined, undefined, files,
+      client, this.config, this.db, writer, undefined, files,
     );
     this.v1Engine = engine;
     return engine;

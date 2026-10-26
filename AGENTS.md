@@ -331,7 +331,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 ### 已披露但未修的问题
 
 - **部分文件落盘**：ReadAny 的 `storage.move` 是 `copyFile` 再 `unlink`；中途失败会在目标留下截断的文件，下一轮会把它上传出去。**已报告，未修。**
-- **行级歧义**：一个较旧的鸿蒙端 `current_spine`/`current_dom_pos` 组合会压过较新的桌面端 `current_cfi`，因为前者「看起来可用」。要给它们排序需要一个 schema 里没有的「按列写入时间」。
+- **行级歧义（r122：v1 已解决后果，v2 仍未；限制精确如下）**：一个较旧的鸿蒙端 `current_spine`/`current_dom_pos` 组合会压过较新的桌面端 `current_cfi`，因为前者「看起来可用」。**r122 在 v1 的 apply 路径上把它解决了**：当一条 `books` 行赢下行级 LWW 并被真正写入后，`PositionWriteThroughWriter`（`data/src/main/ets/PositionWriteThrough.ets`）把本地 `sync_metadata` 位置缓存与该行携带的位置对齐 —— 行有可用 `current_spine`/`current_dom_pos` 对 ⇒ 写成该位置（`fraction = row.progress`）；没有可用对但有 `current_cfi` ⇒ **清空缓存**，于是 `resolveOpenPosition` 落到行上、阅读器开到 CFI 指的那一章；两者都没有 ⇒ 不动缓存；**输掉的行永远不会触达这里**（引擎只在 `shouldApplyRemoteRecord` 为真后调 `upsert`）。**仍然没有、也不需要「按列写入时间」**：用的是已经做出的行级胜负判定。**剩余限制两条**：① **v2 没修** —— v2 通过 `Books.applyRemoteBook` 应用一本书，是另一条合并路径，同样的矛盾在 v2 服务器上仍然存在；② 赢的桌面行只有 CFI 时**章内页码仍不可恢复**（Reader Kit 的 `domPos` 无语法），清空缓存只是让阅读器开到 `book.currentCfi` 那一章。
 - **同步原子性**：`writeTransaction` 是队列串行化 + 重试，**不是真正的 SQLite 事务**（`beginTransaction`/`commit`/`rollBack` 零匹配）。ReadAny 也刻意如此。需要评估 `relationalStore.createTransaction()`（API 14+）之后才能动所有写入路径。
 - **`domPos` 抽样**：设备日志显示 `startDomPos` 是结构化格式（`"0#0;@;0"`、`"8=0#12;@;0"`）。精确的跨端章内恢复也许可能，**但那是未文档化的内部格式**；需要采样收集和成本/收益判断。
 - **`navigateToAnnotation` 的遗留**、`closeReader()` 的三个未 await 调用点（已修为 `void`）
@@ -343,6 +343,102 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 ---
 
 ## 9. 进行中的工作
+
+### r122：拉取**赢下的那一行**把位置写进本地缓存（修「同步成功了，点进去还是旧进度」）+ 密码**留空即沿用**（修「每次改目录都要重输密码」）
+
+两个独立的 bug，根因都已由上一轮定死，本轮只实现。**没有改线格式、没有改 `V1_SYNC_TABLES`、没有改墓碑处理、没有设 `forceApply`、没有动 `ReaderView.ets`。**
+
+#### Bug 1 — 用户原话
+
+> 「**牧神记的阅读进度是80%，我手机上的阅读进度在同步之前是70%，同步成功后显示的是80%，但是点进去还是在70%的进度那里，进去再出来进度又变回70%了。**」
+
+**① 证据（服务器两设备快照，只读复核）**：`/srv/webdav/readany-sync-test/sync/` 里同一个 `id = d54eee47-eab6-4150-964b-4a177f2ad108` 的行——
+
+| 字段 | 桌面 `c890b8f3…` | 手机 `4aeac148…`（同步后） |
+|---|---|---|
+| `progress` | 0.8024562 | 0.8024562 ✅ 已拉取 |
+| `current_cfi` | `epubcfi(/6/3008!/4,/80,/104/1:45)` | 同 ✅ 已拉取 |
+| `current_spine` | **不存在（桌面 `books` 没有这列）** | **1278** ← 手机自己的 |
+| `current_dom_pos` | **不存在** | **`0=0#0;@;0`** ← 手机自己的 |
+| `last_modified_by` | c890b8f3 | c890b8f3 |
+
+所以这一行**同时持有两个矛盾的位置**：新 CFI（80%）+ 旧 spine/domPos 对（70%）。根因是 upsert 的「**payload 里没有的列不动**」规则（`SyncV1.ets:1017-1054`）——**这条规则没有被削弱**，本轮修的是它的后果。
+
+**② 为什么阅读器取了旧的那个**：`ReaderStore.resolveOpenPosition`（`:227`）**本地缓存优先**，行上的列只是兜底。于是 ①拉取→`progress` 0.80 ②打开→解析出旧的 70% ③关闭→`persistPosition` 把 70% 写回行、`updated_at` 变新 ④下次同步→手机的 70% 变成最新的 → **反向摧毁桌面的 80%**。第 ④ 步才是数据丢失。
+
+**③ 规则（三个分支，一分不多）** —— 当一条 `books` 行**赢了行级 LWW 且被真正写入**后，把本地 `sync_metadata` 位置缓存与该行携带的位置对齐：
+
+| 赢的行携带 | 对缓存做什么 | 为什么 |
+|---|---|---|
+| 可用的 `current_spine`/`current_dom_pos` 对（`hasSyncedPositionColumns`，即 `domPos.length > 0 \|\| spine > 0`） | **写成该位置**（`fraction = row.progress`） | 对端确实有更精确的阅读器坐标 |
+| 没有可用对，但有非空 `current_cfi` | **清空缓存** | 于是 `resolveOpenPosition` 落到行上、阅读器开到 `book.currentCfi` 指的那一章（这正是全新安装的行为）——**牧神记就是这一支** |
+| 两者都没有 | **不动缓存** | 没有位置的对端对这台设备的位置什么也没说 |
+
+**输掉的行永远不会触达**：`SyncV1` 只在 `shouldApplyRemoteRecord` 为真之后才调 `writer.upsert`，输的分支 `continue`。**这是结构性质，不是这里再判一次**。**没有引入任何新的时间戳，也没有比较时间戳**：用的是**已经做出的行级胜负**。`books.updated_at` 不是位置时间戳（每次无关编辑、每次拉取都会 bump），`last_opened_at` 也不是——这两条论证**原样保留**。
+
+**④ 接缝：`record writer` 装饰器，而不是往 `SyncV1` 里挂钩子。** 新文件 `data/src/main/ets/PositionWriteThrough.ets` 里 `PositionWriteThroughWriter implements V1RecordWriter`，把真 writer 包起来；`upsert` 是**唯一**有自己行为的方法（其余 4 个方法原样转发：`columnsOf`/`loadStates`/`remove`/`rememberTombstone`）。生产接线在 `SyncService.ensureV1Engine`：`new SyncV1Engine(client, this.config, this.db, writer, undefined, files)` 的第 4 个参数从 `undefined` 换成 `new PositionWriteThroughWriter(new RdbRecordWriter(this.db), this.db)`。
+
+- **为什么这里**：`SyncV1` 是表通用的，它唯一需要告诉 writer 的事实就是「这一行赢了，写它」；把「刚写下的那一行」同步到阅读器缓存是**阅读器的事**，用同一个端口表达即可。所以 **`SyncV1.ets` 一行未改**（审计断言它**不含** `current_spine`/`current_dom_pos`/`current_cfi`/`PositionWriteThrough`，全文只有 **1 处** `writer.upsert(` 且位置在 LWW 判定之后）。
+- **行先写、缓存后跟**：`upsert` 里 `await this.inner.upsert(...)` 在 `reconcilePosition` 之前。否则「缓存成功、行写失败」会让设备恢复到一个**没有任何行携带的**位置。
+- **缓存失败只记日志，不重抛**：`SyncV1` 会把抛异常的 `upsert` 记成 **skipped**，于是**已经应用**的行会在每一轮都被报成跳过，真正的原因反而永远看不到。
+- **只对 `books`**：`if (table !== 'books') { return; }`。
+
+**⑤ 写回侧已从代码确认**：`Index.openReader` → `resolveOpenPosition` → `ReaderView` 首屏 `onPositionChanged`（`lastReportedSpine` 初值 `-1`，**首屏一定上报**）→ 节流 flush → `persistPosition`（先写本地缓存，再 `updateReadingPosition`）。所以**关闭时写的就是解析出来的那个位置**；修复后它解析成 80%，写回也是 80%。**仍然会写「旧」位置的只有一处**：`flushPendingPosition` 的 `committedPosition` 兜底（上一轮会话的最后位置）——同一本书时它本来就是对的，而且阅读器占屏期间不可能有拉取，所以本轮不动它。
+
+**⑥ 明确不覆盖**：**v2 路径没修**。v2 通过 `Books.applyRemoteBook` 应用一本书，是另一条合并路径，同样的矛盾在 v2 服务器上仍然存在（已写进 §8 的「行级歧义」）。
+
+#### Bug 2 — 用户原话
+
+> 「**然后我想保存同步界面里的密码，不然每次改目录都要重新输密码。**」
+
+**① 根因（已复核）**：`SyncSettingsPage.ets:58` 的 `@State private password: string = ''` 起始为空且**从不从凭据库填充**；`:183` 把 `this.password` 交给 `onSave`；`Index.saveConnection:1815` → `SyncService.saveConnection:462` **无条件** `await this.credentials.setWebDavPassword(password)`，而那个 setter 对空串的行为是**删除**（`CredentialStore.ets:251-255`）。于是「改远程目录 → 字段是空的 → 保存 → 凭据被删」→ `configured`（`:475-476` 要求 `hasWebDavPassword()`）变 false → 下次同步认证不了。旧文档那句「空密码清空凭据，这样『清空字段并保存』就符合用户预期」对**主流流程**是错的。
+
+**② 新契约（`saveConnection`，文档已重写、旧段落已删除并被审计断言不存在）**：
+- **空 → 保留**已有的凭据（实现：`if (password.length > 0) { await this.credentials.setWebDavPassword(password); }`）；
+- **非空 → 覆盖**；
+- **清除变成显式动作**：新增 `SyncService.clearWebDavPassword()`（清凭据 + `dropEngines()` + 用 `hasWebDavPassword()` 重算 `configured` + emit）。**`dropEngines` 是必须的**：共享 `client` 是用被删掉的密码建的，留着它会继续用用户刚删除的凭据认证。`clearConfiguration()` **照旧**清密码。
+- **调用者已核**：全树 `saveConnection(` 恰好 **3 处** —— `SyncService` 的声明、`Index` 的私有包装声明、`Index` 里 `sync().saveConnection(...)` 那一处调用（审计断言这个数）。**没有任何调用者依赖「空即清空」**。
+
+**③ 页面**：新增 `@Prop hasStoredPassword: boolean`（**由 shell 传入，页面不碰服务单例**，与 `config`/`palette` 同一形状）+ `onClearPassword` 回调。
+- **placeholder 条件化**：有凭据 → `已保存 · 留空则不修改`；没有 → `密码`。密码标签下的提示也分叉（有凭据时「已保存…留空表示沿用」）。
+- **显式清除控件**：仅当 `hasStoredPassword` 时出现的小号次级按钮「清除已保存的密码」，**透明填充（显式 `Color.Transparent`）+ `$r('sys.color.warning')` 字形**，走 `onClearPassword` → `Index.clearStoredPassword` → `sync().clearWebDavPassword()` → `applyConfig()` + `refreshCredentialState()`。
+- **确认**：加了，用 **`UIContext.showAlertDialog`**（**不是**被弃用的全局 `AlertDialog.show`；编译器每次构建都会警告它）。它是**平台对话框**，浮在页面上而不是排在页面里，**不扰动布局**，所以满足「不要用会打乱布局的模态」。
+- **没有预填真实密码（刻意选择）**：把真 secret 读进 `@State` 会让它在 UI 状态里，而且「空 = 沿用」在字段已经被填满的情况下无法表达。**字段仍然看起来是空的，这就是信号**（placeholder 承担说明）。保存成功后字段清空，于是占位符/说明文案重新可见。
+- `InputType.Password` 与 `.onChange` 行为**未动**。
+- **页面文案纠正**：保存后不再说「注意密码为空，同步前需要补填」（那是旧契约），改成「密码留空，沿用已保存的密码」/「尚未保存密码，同步前需要填写」两种。
+
+**④ 反转的文档/契约（逐条）**：
+1. `SyncService.saveConnection` 的「**空密码清空凭据**」段落**删除**并换成新契约（审计断言旧句不存在、新句存在）。
+2. `ReaderStore.resolveOpenPosition` 的「**已经在本机读过的书永远保留本机位置，即使对端读得更远**」不再无条件成立 → 改成「**只到下一次拉取应用了一条获胜行为止**」，并写明「本机位置**绝不会被输掉的行摧毁**」；`updated_at`/`last_opened_at` 的论证**原样保留**（审计断言它仍在）。
+3. 同步页保存成功文案（见上）。
+4. §8「行级歧义」从「未解问题」改成「**部分解决 + 两条精确限制**」。
+
+#### 没有动的东西
+
+`ReaderView.ets` **一个字节未改**（所以 strip 探针 9 个锚点行号**完全不变**）；`Rdb.ets` 的 `queueBusy`、三个破坏性同步操作、墓碑上界、`V1_SYNC_TABLES`、线格式、`forceApply`、r118–r121 的书架头部/材质/`Scroller.currentOffset()`/`tempo`；同步页的单一父级水平内缩（r116，**这条审计本轮抓到过一次**：我最初给清除按钮写了 `padding({ left, right })`，`verify-reader-chrome` 立刻失败，改成不写内边距、靠胶囊自带的内边距，**没有削弱那条断言**）。**没有新增任何十六进制颜色字面量**。
+
+#### 审计
+
+**30 工具 / 3848 项 / 3848 通过 / 0 失败**（基线 **3744** → 净 **+104**）。逐工具：**`verify-reading-position` 274 → 345（+71）**、**`verify-sync-modes` 87 → 120（+33）**、`verify-book-menu` **271 → 271**（`BUILD_STAMP` 钉子从 r120 改到 r122，计数不变）、**其余 27 个工具逐条相同**。失败集合 **∅**。裸 `Select-String 'passed'` 仍是 **34** 行。
+
+- **反转/改写的断言**：`BUILD_STAMP` 钉子 → r122 的 tag；`verify-reading-position` 的 `buildSeedApi` **必须**找到新的 `hasSyncedPositionColumns`（否则整个 seeded 段会抛错），所以那条提取检查**变强**（现在要求两个定义都在、且 `hasSyncedPosition` 显式转发给它 —— 断言「一份定义」）。
+- **新增的断言**：三分支规则**被当成真实函数执行**（`pulledPositionAction` + 真实的 `hasSyncedPositionColumns`，含牧神记那一行 `epubcfi(/6/3008!/4,/80,/104/1:45)` → CLEAR、以及「有对就 SET，即使同时有 CFI」）；三个判定值互不相同；「行先写、缓存后跟」；「只对 books」；「缓存失败不逃出 upsert」；「恰好一个方法调用 reconcile」；4 个转发方法；装饰器不碰 SQL（不用 `rdbHandle`）；生产接线两处；**引擎不含任何位置列**；**全文只有 1 处 `writer.upsert(` 且在 LWW 判定之后**；输的分支 `continue`；端口仍可选；注释的新限定语与新安全半句；**reconcile 的代码里不出现 `updated_at`/`last_opened_at`**（**按去注释源码断言**，因为散文里必须允许提到它们）。
+- 凭据侧：新契约句存在/旧句不存在；写入被非空守卫；`saveConnection` 里恰好一次凭据写；连接先存；显式清方法存在且清凭据/dropEngines/重算 configured；`clearConfiguration` 仍清密码；`saveConnection` 全树恰好 3 处；页面不直接碰服务；`@Prop` 存在且被 shell 传入；placeholder 两态；字段仍空且仍是 `Password`；**页面不出现 `getWebDavPassword`**；`onChange` 未变；清除控件存在且**仅在有凭据时渲染**；确认走 `UIContext.showAlertDialog` 而非全局 `AlertDialog.show`；shell 保存后/清除后都刷新凭据状态（**按方法体切片断序**）。
+- **`.diag/r122-mutate.mjs`：21/21 全抓、2/2 controls 全绿、0 条 NOT APPLIED、6 个源文件 sha256 逐字节还原。** 变异覆盖：两个分支互换、CFI 分支删除（复现用户报的 bug）、无位置也清缓存、缓存先于行、books 门删除、异常逃出 upsert、谓词缺 domPos 半、LWW 门绕过、引擎学列、装饰器建了没传、注释失去限定、空密码直达凭据库、placeholder 退化、清除按钮常驻、预填 secret、弃用对话框回潮、旧保存文案回潮、清除不清引擎、`configured` 直接置 true、保存后/清除后不刷新。**两条 control**：把 `current_spine`/`updated_at` 写进**注释**、把注释改写——都必须保持全绿（证明去注释切片真的有效）。
+
+#### 产物
+
+`harmony/entry/build/default/outputs/default/entry-default-unsigned.hap`，**1,948,303 字节**，sha256 **`fbb666145e8f340f3163941edb0dbc1cfd691fa298c54beb4d2a291482f1c382`**（**clean 构建后磁盘上那个文件**；按 §3.1，增量构建的产物只差 `ets/modules.abc` 与 `ets/sourceMaps.map`，所以 hash 标识的是这一个文件而不是可复现构建），未签名（`Will skip sign 'hos_hap'`），由用户手动安装。**增量构建与 `clean` 后构建都 `BUILD SUCCESSFUL`。**
+
+#### 未验（不许当成已验）
+
+**本轮设备不在**：`hdc list targets -v` 返回 `[Empty]`，所以**没有 `uitest dumpLayout`、没有注入任何手势、没有装机观测**。修复本身完全未上机。必须手跑：
+- 手机上打开牧神记 → **80%**（不是 70%）；退出再进 → 仍 80%；书架仍 80%；
+- **再同步一次，确认桌面端仍是 80%**（没有被反向覆盖）——这是 bug 1 的另一半；
+- 改远程目录 → 保存 → **下一次同步仍能认证**，不需要重输密码；
+- 用「清除已保存的密码」→ 确认 → 下一次同步**认证失败/显示未配置**。
+- 未观测：`UIContext.showAlertDialog` 在三个主题下的外观、清除按钮在长文案下是否换行、以及 `hasStoredPassword` 在冷启动时是否已经在首帧正确（`refreshCredentialState` 在 `bootstrap` 里 await，但 `@Prop` 初值是 `false`，所以**极短的一帧**可能显示「无凭据」的 placeholder）。
+- **v2 服务器上的 bug 1 未修**（见 §8）。
 
 ### r121：文档纠错（6 处）与敏感信息打码（**无代码改动**）
 

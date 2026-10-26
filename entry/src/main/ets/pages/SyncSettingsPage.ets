@@ -52,6 +52,22 @@ export struct SyncSettingsPage {
    * `SyncConfigStore` path `onSave` uses — there is no second storage location.
    */
   onAutoSyncChange: (enabled: boolean) => Promise<void> = async (): Promise<void> => {};
+  /**
+   * Whether a WebDAV password is currently in the credential store.
+   *
+   * Passed in like `config` and `palette`, so this page still has no dependency on the
+   * service singleton. It exists because the form can only say "leave the field empty to
+   * keep the saved password" if it knows there *is* a saved password — and because an
+   * empty field must not be read as "clear it" (see `SyncService.saveConnection`).
+   */
+  @Prop hasStoredPassword: boolean;
+  /**
+   * Forget the stored password, on an explicit request from the user.
+   *
+   * The counterpart of "an empty field keeps the saved password": with that rule, a save
+   * can no longer remove the credential, so the removal needs a control of its own.
+   */
+  onClearPassword: () => Promise<void> = async (): Promise<void> => {};
 
   @State private url: string = '';
   @State private username: string = '';
@@ -174,25 +190,85 @@ export struct SyncSettingsPage {
       this.resultText = '请先填写服务器地址和用户名。';
       return;
     }
+    // Captured before the await, because the field is emptied on success below.
+    const typed: string = this.password;
     this.busy = true;
     this.busyLabel = '正在保存...';
     try {
       await this.onSave(
         this.url,
         this.username,
-        this.password,
+        typed,
         this.allowInsecure,
         this.remoteRoot,
       );
+      // The secret lives in the credential store now, not in this component's state. Empty
+      // is also the state that means "keep the saved password" on the next save, so this is
+      // the same thing the field looks like on open.
+      this.password = '';
       this.resultOk = true;
-      this.resultText = this.password.length > 0
+      this.resultText = typed.length > 0
         ? '已保存。密码已存入系统安全存储。'
-        : '已保存连接信息；注意密码为空，同步前需要补填。';
+        : (this.hasStoredPassword
+          ? '已保存。密码留空，沿用已保存的密码。'
+          : '已保存连接信息；尚未保存密码，同步前需要填写。');
       this.toast('已保存');
     } catch (err) {
       this.resultOk = false;
       this.resultText = describeError(err);
       this.toast('保存失败');
+    } finally {
+      this.busy = false;
+      this.busyLabel = '';
+    }
+  }
+
+  /**
+   * Ask, then remove the stored password.
+   *
+   * A confirmation because this is the only destructive control on the page and the only
+   * way to lose the credential — with 「留空即沿用」 in force, an accidental tap would
+   * otherwise be unrecoverable without the secret. `UIContext.showAlertDialog` is a platform
+   * dialog, so it floats over the page rather than being laid out inside it; nothing here
+   * can shift the form. The `UIContext` route rather than the module-level
+   * `AlertDialog.show` for the same reason `ui/Toast.ets` exists: the global form is
+   * deprecated, and the compiler says so on every build.
+   */
+  private confirmClearPassword(): void {
+    this.getUIContext().showAlertDialog({
+      title: '清除已保存的密码',
+      message: '只会删除系统安全存储中的 WebDAV 密码，服务器地址和同步参数会保留。清除后同步会显示为未配置，需要重新填写密码。',
+      primaryButton: {
+        value: '取消',
+        action: (): void => {},
+      },
+      secondaryButton: {
+        value: '清除',
+        action: (): void => {
+          this.clearPassword();
+        },
+      },
+    });
+  }
+
+  /** Remove the credential through the shell, and report the outcome on the page. */
+  private async clearPassword(): Promise<void> {
+    if (this.busy) {
+      return;
+    }
+    this.busy = true;
+    this.busyLabel = '正在清除密码...';
+    this.resultText = '';
+    try {
+      await this.onClearPassword();
+      this.password = '';
+      this.resultOk = true;
+      this.resultText = '已清除保存的密码。同步会显示为未配置，直到重新填写密码并保存。';
+      this.toast('已清除密码');
+    } catch (err) {
+      this.resultOk = false;
+      this.resultText = describeError(err);
+      this.toast('清除失败');
     } finally {
       this.busy = false;
       this.busyLabel = '';
@@ -251,13 +327,49 @@ export struct SyncSettingsPage {
             this.username = value;
           })
 
-        this.renderFieldLabel('密码 / 应用密码', '保存在系统安全存储中，不会写入配置文件')
-        TextInput({ text: this.password, placeholder: '密码' })
+        this.renderFieldLabel('密码 / 应用密码',
+          this.hasStoredPassword
+            ? '已保存在系统安全存储中；留空表示沿用已保存的密码'
+            : '保存在系统安全存储中，不会写入配置文件')
+        // **The field is empty on purpose, and the placeholder is the signal.** Pre-filling it
+        // with the real secret would put the password into `@State` and into the rendered
+        // text, and it would make "leave it empty to keep what is stored" impossible to
+        // express — an empty field would then have to mean "the user deleted it".
+        TextInput({
+          text: this.password,
+          placeholder: this.hasStoredPassword ? '已保存 · 留空则不修改' : '密码',
+        })
           .type(InputType.Password)
           .width('100%')
           .onChange((value: string): void => {
             this.password = value;
           })
+
+        // The explicit clear. Shown only when there is something to clear, because an
+        // always-present "clear" button on a page with no stored password is a control that
+        // can only lie. Secondary styling rather than the primary fill of 保存/测试连接: it
+        // is not the page's main action, and `Color.Transparent` is written down because an
+        // *unset* `backgroundColor` on a Button is the framework's own fill, not transparency.
+        if (this.hasStoredPassword) {
+          Row() {
+            // No `padding({ left, right })` here on purpose: `verify-reader-chrome` asserts that this
+            // whole form carries **zero** horizontal padding or margin, because the parent owns the
+            // page's single inset (r116) and an element that re-adds either is inset twice. The
+            // capsule's own internal padding is what gives this button its width.
+            Button('清除已保存的密码')
+              .fontSize(13)
+              .height(32)
+              .backgroundColor(Color.Transparent)
+              .fontColor($r('sys.color.warning'))
+              .enabled(!this.busy)
+              .onClick((): void => {
+                this.confirmClearPassword();
+              })
+          }
+          .width('100%')
+          .justifyContent(FlexAlign.End)
+          .margin({ top: 4 })
+        }
 
         // ---- advanced ----------------------------------------------------
         this.renderFieldLabel('远程目录', `默认 ${DEFAULT_REMOTE_ROOT}；会创建在服务器上`)

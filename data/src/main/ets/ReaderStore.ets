@@ -33,6 +33,15 @@
  * Surviving a reinstall is the book row's job, which is why the two are combined in
  * `resolveOpenPosition`.
  *
+ * **A pull that wins writes through to that cache.** Merging a peer's `books` row only
+ * rewrites the columns the peer sent, so a desktop row (which has no
+ * `current_spine` / `current_dom_pos` columns at all) can leave this device's stale pair
+ * beside a fresh `progress` and CFI. `resolveOpenPosition` prefers the local pair — for
+ * the reason stated there — so without the write-through the next open would resume at
+ * the stale page and write it back over the peer's newer progress. `PositionWriteThrough`
+ * reconciles the cache with the row that won, which is why the preference above is only
+ * "until the next pull applies a winning row".
+ *
  * Settings are persisted alongside, because a reader that forgets the font size
  * between sessions is not usable.
  */
@@ -219,10 +228,15 @@ export function hasPosition(position: ReadingPosition): boolean {
  *
  * The tradeoff, stated rather than hidden: a book already read on this device keeps
  * this device's position even when a peer has read further, because the peer's
- * position arrives in columns whose write time is not recorded. What the fallback
- * fixes is the case that was broken — a fresh install, a reinstall, or any device
- * that has never opened the book now starts at the position a peer synced instead of
- * at page 1.
+ * position arrives in columns whose write time is not recorded. **That preference lasts
+ * only until the next pull applies a winning row for this book**: the local entry is a
+ * cache, and `PositionWriteThrough` reconciles it with the position the winning row
+ * carries (setting it when the row has a usable pair, clearing it when the row has only
+ * a CFI). The one thing that must never happen — and does not — is a local position
+ * being destroyed by a row that *lost* the merge: the engine calls the writer only for
+ * a row that won. What the fallback below fixes is the case that was broken — a fresh
+ * install, a reinstall, or any device that has never opened the book now starts at the
+ * position a peer synced instead of at page 1.
  */
 export function resolveOpenPosition(local: ReadingPosition, book: Book): ReadingPosition {
   if (hasPosition(local)) {
@@ -257,7 +271,19 @@ export function resolveOpenPosition(local: ReadingPosition, book: Book): Reading
  * item, which is the same place, and a peer's CFI is not masked by an ambiguous zero.
  */
 export function hasSyncedPosition(book: Book): boolean {
-  return book.currentDomPos.length > 0 || book.currentSpine > 0;
+  return hasSyncedPositionColumns(book.currentSpine, book.currentDomPos);
+}
+
+/**
+ * The same test against the two columns rather than a book row.
+ *
+ * Split out because the two producers must not drift: `resolveOpenPosition` reads the
+ * columns off the row, while the write-through that keeps the local cache in step with a
+ * winning pull (`PositionWriteThrough`) has only the wire record. Two copies of
+ * `domPos.length > 0 || spine > 0` would disagree the day one of them changed.
+ */
+export function hasSyncedPositionColumns(spine: number, domPos: string): boolean {
+  return domPos.length > 0 || spine > 0;
 }
 
 /** `sync_metadata` keys owned by the reader. */
