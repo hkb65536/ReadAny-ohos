@@ -85,7 +85,7 @@ Copy-Item AGENTS.local.md.example AGENTS.local.md   # 填 DEVECO_HOME，其余�
 > | **本机（`D:\Code\InkBoat\ReadAny`）** | **普通完整克隆，停在 `main` = `fce44689`（2026-10-07）**，一百多个 `origin/*` 分支都在，**`packages/core/src/sync/per-book-sync.ts` 在**（39,753 字节） |
 >
 > **两条不变的事实**（两台都成立）：
-> 1. **`v1.3.6` 里没有 v2** —— `per-book-sync.ts` 是 main 独有，main 比 v1.3.6 领先 77 个提交（v1.3.6 = `8d3f74a1`，2026-08-16）。**本机已核**：`git cat-file -e v1.3.6:packages/core/src/sync/per-book-sync.ts` 失败。
+> 1. **`v1.3.6` 里没有 v2** —— `per-book-sync.ts` 是 main 独有，main 比 v1.3.6 领先 77 个提交（v1.3.6 = `8d3f74a1`，2026-08-16）。**本机已核两遍**：① `git cat-file -e v1.3.6:packages/core/src/sync/per-book-sync.ts` 失败；② **v1.3.6 的 `sync-store.ts` 里连 `runPerBookSync` 这个名字都没有**，只有 `runSimpleSync`（`const { runSimpleSync } = await import("../sync/simple-sync")`）。后者比「文件不存在」更强——**发布版的代码里根本没有 v2 这条路径**。
 > 2. **本文档里 `simple-sync.ts:396-418` 这类行号是 main 的行号**。在 v1.3.6 检出里，`if (!options.forceApply && deletedAt > 0)` 在 **:381**、`if (deletedAt > 0)` 在 **:393** —— 语义一致（`deletedAt <= 0` 时整段 `if` 被跳过，那条 DELETE 无条件执行）。
 >
 > **🔑 v2 到底有没有被用到（2026-10-27 实测，`packages/core/src/stores/sync-store.ts:599-601`）**：
