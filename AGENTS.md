@@ -75,11 +75,32 @@ Copy-Item AGENTS.local.md.example AGENTS.local.md   # 填 DEVECO_HOME，其余�
 >
 > 本轮只改**现行生效**的路径（§1、硬约束、§3 命令、§4.2、§12）与产物路径；历史轮次的正文保留原文，以保持「当时到底跑了什么」可追溯。
 
-> **⚠️ 参照实现的版本口径（2026-10-26，r124）**
+> **⚠️ 参照实现的版本口径（2026-10-26 由 r124 写；2026-10-27 按本机实测修订）**
 >
-> `$env:READANY_REF`（本机检出目录）**不是 main**，是 **`v1.3.6`** 的标签提交。两个直接后果：
-> 1. **v2 协议在 v1.3.6 里不存在** —— `packages/core/src/sync/per-book-sync.ts`（1085 行）是 **main 独有**，main 比 v1.3.6 领先 **77 个提交**。所以「已发布的桌面端只讲 v1」这条前提现在有本地证据，不再是从别处推断的。
+> **两台机器的 `$env:READANY_REF` 状态不同，读这一节必须先看自己停在哪：**
+>
+> | 机器 | 检出状态 |
+> | --- | --- |
+> | 公司机（`D:\Code\ReadAny`） | `pinned-v1.3.6`（`8d3f74a1`），`main` 与 98 个远端引用已删（r124 做的） |
+> | **本机（`D:\Code\InkBoat\ReadAny`）** | **普通完整克隆，停在 `main` = `fce44689`（2026-10-07）**，一百多个 `origin/*` 分支都在，**`packages/core/src/sync/per-book-sync.ts` 在**（39,753 字节） |
+>
+> **两条不变的事实**（两台都成立）：
+> 1. **`v1.3.6` 里没有 v2** —— `per-book-sync.ts` 是 main 独有，main 比 v1.3.6 领先 77 个提交（v1.3.6 = `8d3f74a1`，2026-08-16）。**本机已核**：`git cat-file -e v1.3.6:packages/core/src/sync/per-book-sync.ts` 失败。
 > 2. **本文档里 `simple-sync.ts:396-418` 这类行号是 main 的行号**。在 v1.3.6 检出里，`if (!options.forceApply && deletedAt > 0)` 在 **:381**、`if (deletedAt > 0)` 在 **:393** —— 语义一致（`deletedAt <= 0` 时整段 `if` 被跳过，那条 DELETE 无条件执行）。
+>
+> **🔑 v2 到底有没有被用到（2026-10-27 实测，`packages/core/src/stores/sync-store.ts:599-601`）**：
+>
+> ```ts
+> // LAN keeps the legacy device-snapshot protocol; cloud backends use the per-book engine.
+> const runSync = backend.type === "lan" ? runSimpleSync : runPerBookSync;
+> ```
+>
+> - **`backend.type === "lan"` → v1**（`simple-sync`，写 `/readany/sync/device-{id}.json`，**不建子目录**）
+> - **`webdav` / `s3` → v2**（`per-book-sync`，写 `/readany/sync/{books,threads,chat,profile,sessions}/…`）
+> - **⇒ 在 `main` 里，WebDAV 已经默认走 v2。** 只有 LAN 保留 v1。
+> - **而 `v1.3.6` 里根本没有 v2 代码**，所以**已发布的 1.3.6 只讲 v1** —— 我们的手机端现在还能和桌面端互通，**正是靠这一点**。
+> - **⚠️ 前向风险（升级桌面端之前必须知道）**：桌面端一旦升到**超过 1.3.6** 的版本，**WebDAV 会切到 v2**，而我们的客户端**只会 v1**。两者共用同一个 `SYNC_ROOT = "/readany/sync"` 和同一个 `index.json`，但**目录布局完全不同** ⇒ 后果不是数据错乱，而是**互为空白**（各写各的子目录/device 文件，互相看不见）。真要跟随，就必须实现 v2。
+> - **实物证据**：`/srv/webdav/readany-sync-test/sync/` 下有**空的** `books/` 和 `profile/` 目录（创建于 2026-10-26 17:26）—— **那是 v2 的目录布局，v1 从不创建子目录**。所以那天**确实有一个 v2 客户端连过这个 share**，只是没写进任何内容（目录空）。这两条空目录别删，它们是"v2 客户端来过"的唯一痕迹。
 
 - **开源协议**：本移植是 ReadAny（**GPL-3.0-or-later**）的衍生作品，`LICENSE`/`NOTICE`/`README.md` 已补齐并推送 —— 详见 **§12.6**
 
@@ -333,7 +354,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 | 半模态顶部的横条 + 背景不统一 | ① `.bindSheet` 没设 `backgroundColor`，`BindOptions.backgroundColor` **默认 `Color.White`**；② **`dragBar` 默认 true**，平台拖拽胶囊画在容器背景上、位于内容之上的一条带里 | `backgroundColor: this.sheetCard()` + `dragBar: false` + `showClose: false` |
 | `SheetSize.MEDIUM` 不是「一半」 | **它是 60%**（参考文档 + `mediumPercent_ = 0.6` 两处独立来源）。`common.d.ts` 里那句 "half the screen height" 是 API 10 时代的陈旧注释 | 要字面一半用 `height: '50%'`（基准是 `窗口高 − sheet 顶部安全区`） |
 | `detents` 和 `dragBar: false` 冲突？ | **不冲突**——拖拽条会被显式隐藏。**真正的理由**：设了 `detents` 后 `height` 被忽略、面板可跟手拖离该高度 | 要固定高度就不要 `detents` |
-| **同步后进度倒退**：手机上显示 70%，桌面 80%；再同步后连桌面也被改成 70% | 本地位置缓存优先（`ReaderStore.resolveOpenPosition`）+ 每次写回都用 `nextUpdatedAt`（`max(now, 行+1)`）刷新 `updated_at` → 旧进度永远"最新"，远端永远赢不了 | r126：值没变就不刷新时间戳；行比缓存新则以行为准；赢下的 payload 只有 CFI 时**同时**清缓存与行上的 `spine/domPos` |
+| **同步后进度倒退**：手机上显示 70%，桌面 80%；再同步后连桌面也被改成 70% | 本地位置缓存优先（`ReaderStore.resolveOpenPosition`）+ 每次写回都用 `nextUpdatedAt`（`max(now, 行+1)`）刷新 `updated_at` → 旧进度永远"最新"，远端永远赢不了。**2026-10-27 实测：三台设备已收敛到同一个 progress 与同一个 CFI（见 §9 r126 的「实测」）** | r126：值没变就不刷新时间戳；行比缓存新则以行为准；赢下的 payload 只有 CFI 时**同时**清缓存与行上的 `spine/domPos` |
 | 构建跑到 `PackageHap` 报 `spawn java ENOENT`（`00308018`） | DevEco 自带 JBR 但**没进 PATH**、`JAVA_HOME` 为空；打包步骤靠 `java` | `build.bat` 已自动设 `JAVA_HOME=%DEVECO_HOME%\jbr`；手工调 hvigorw 前先 `& .\scripts\env.ps1` |
 
 ---
@@ -414,7 +435,7 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 
 ## 9. 进行中的工作
 
-### r126：修「同步后进度倒退」——三个 bug 叠成的死循环（**已构建，未上机**）
+### r126：修「同步后进度倒退」——三个 bug 叠成的死循环（**已构建；修复已于 2026-10-27 实测收敛**）
 
 **用户原话**：「我装了 r122，但是同步还是有问题」。实测到的最坏结果：新电脑 `c7cd6c92` 的牧神记 **80.0142% 被手机覆盖成 69.5865%**，`last_modified_by` 变成手机的 device id，CFI 也被换掉。**这不是显示问题，是数据被反向覆盖。**
 
@@ -461,13 +482,27 @@ mcp__harmonyos_developer_knowledge__getDocumentsById    ← 传 search 返回的
 
 规则用真实数据做了离线推演（不是跑 `.ets`，是同一套判定逻辑）：场景 A 检出"四列全等 ⇒ no-op"、场景 B（仅 CFI 的行赢下）⇒ 清对后落到 `EMPTY → initialSpine=-1 → 用 initialCfi`。
 
-#### 未验（不许当成已验）
+#### 实测（2026-10-27，用户按顺序执行恢复三步之后的服务器数据）
 
-**没有上机**。而且**修好代码不会自动把已经写坏的数据改回来**：手机当前那份 69.59% 的时间戳（21:42:42）仍比老桌面的 80.2456%（17:28:16）新。恢复顺序：
+**收敛成立，三台逐字段对上。** 数据来源：`/srv/webdav/readany-sync-test/sync/` 的三份 `device-*.json`，只读解析。
 
-1. 老桌面打开《牧神记》→ 翻一页 → 退出（把它那行刷成"现在"）→ 同步；
-2. 手机同步，**不要先打开书** → 拉到的 CFI-only 行会触发 CLEAR ⇒ 书架 80%、点进去开在 CFI 那一章；
-3. 新电脑再同步，拿回 80%。
+| 设备 | progress | `current_cfi` | `spine` / `domPos` | 行 `updated_at` | `modified_by` |
+| --- | --- | --- | --- | --- | --- |
+| 手机 `4aeac148` | `0.8034431166793891` | `epubcfi(/6/3012!/4,/32/1:15,/58/1:41)` | **`0` / `''`** | 10-26 22:33:07 | `c7cd6c92` |
+| 新电脑 `c7cd6c92` | 同上 | 同上 | 无 | 10-26 22:33:07 | `c7cd6c92` |
+| 老桌面 `c890b8f3` | 同上 | 同上 | 无 | **10-26 22:33:07**（该快照写于 10-27 09:18:19） | `c7cd6c92` |
+
+**逐条读出的事实**：
+
+- **`progress` 与 `current_cfi` 三台逐字节一致** ⇒ 收敛成立，**不再有「一台 70% 一台 80%」**。
+- **`modified_by` 三台都是 `c7cd6c92`** ⇒ 溯源正确，**没有设备把别人的位置假装成自己写的**。
+- **手机那行是 `spine=0` / `domPos=''`**（另两台是 `<absent>`）：`hasSyncedPosition = (''.length > 0 || 0 > 0) = false` ⇒ **三台的 `initialSpine` 都拿不到正数 ⇒ 都会真正用上 `initialCfi`**。**这就是本节第 3 条改动（清行上的对）在真机上的直接证据**——只清缓存不够，行上的旧对还在就会赢。
+- **🔑 最有说服力的一条**：老桌面 **10-27 09:18** 同步过（快照时间戳 09:18:19），**而那一行的 `updated_at` 仍然是 `10-26 22:33:07`** ⇒ **它拿到了新值、写进去了、但没有伪造时间戳**。若还是 r122 的行为，这里会变成 09:18、`modified_by` 变成 `c890b8f3`——**那就是又一次「零信息写入决定胜负」**。本节第 1 条改动（值没变不刷新版本）在真机上成立。
+
+**仍未验 / 仍要注意**：
+
+- **第四台 `1fed7d11`** 只出现在**正本 `/readany/sync/`**（10-26 23:23 写过一次），**不在 `readany-sync-test` 这次收敛里**。两台树仍然是分裂的：`/readany/` = `{1fed7d11, c7cd6c92, c890b8f3}`，`/readany-sync-test/` = `{4aeac148, c7cd6c92, c890b8f3}`。**要让四台都在一个组里，得把它们指到同一棵树。**
+- **v2 路径仍未修**（`Books.applyRemoteBook`），见 §8 的「行级歧义」。
 
 ### r125：把机器路径从仓库里抽出去（跨机开发）+ 首次在本机构建成功
 
